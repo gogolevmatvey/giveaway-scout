@@ -1,0 +1,14 @@
+{
+  "productName": "Giveaway Scout E2E",
+  "identifier": "com.giveawayscout.desktop.e2e.dev",
+  "build": { "beforeBuildCommand": "" },
+  "app": {
+    "windows": [{
+      "label": "main", "title": "Giveaway Scout [TEST]",
+      "width": 960, "height": 600, "minWidth": 760, "minHeight": 600, "resizable": true,
+      "center": true, "visible": false
+    }]
+  },
+  "plugins": { "deep-link": { "desktop": { "schemes": ["giveaway-scout-e2e"] } } },
+  "bundle": { "active": false, "createUpdaterArtifacts": false }
+}

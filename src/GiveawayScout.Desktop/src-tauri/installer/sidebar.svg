@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="164" height="314" viewBox="0 0 164 314">
+  <defs>
+    <linearGradient id="panel-background" x1="0" y1="0" x2="164" y2="314" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#222e54"/>
+      <stop offset="1" stop-color="#131925"/>
+    </linearGradient>
+  </defs>
+  <rect width="164" height="314" fill="url(#panel-background)"/>
+  <circle cx="82" cy="116" r="88" fill="none" stroke="#718bff" stroke-opacity="0.12"/>
+  <circle cx="82" cy="116" r="110" fill="none" stroke="#718bff" stroke-opacity="0.08"/>
+  <rect x="20" y="22" width="124" height="3" rx="1.5" fill="#6c86f5"/>
+  <svg id="app-logo" x="22" y="56" width="120" height="120" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="background" x1="150" y1="110" x2="860" y2="910" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#506FE0"/>
+      <stop offset="1" stop-color="#293D87"/>
+    </linearGradient>
+    <linearGradient id="sweep" x1="512" y1="512" x2="814" y2="210" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#69E0B0" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#69E0B0" stop-opacity="0.82"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="24" stdDeviation="26" flood-color="#17285E" flood-opacity="0.34"/>
+    </filter>
+  </defs>
+
+  <rect x="48" y="48" width="928" height="928" rx="224" fill="url(#background)"/>
+  <g filter="url(#shadow)">
+    <circle cx="512" cy="512" r="302" fill="#253675" stroke="#FFFFFF" stroke-width="52"/>
+    <circle cx="512" cy="512" r="184" fill="none" stroke="#91A6FA" stroke-width="34" opacity="0.72"/>
+    <path d="M512 512 L512 202 A310 310 0 0 1 822 512 Z" fill="url(#sweep)"/>
+    <path d="M512 512 L754 270" fill="none" stroke="#77E7B8" stroke-width="42" stroke-linecap="round"/>
+    <circle cx="512" cy="512" r="62" fill="#FFFFFF"/>
+    <circle cx="512" cy="512" r="28" fill="#4E6DDA"/>
+    <circle cx="745" cy="292" r="72" fill="#FFBD3F" stroke="#FFFFFF" stroke-width="30"/>
+  </g>
+  </svg>
+  <g fill="#f1f4ff" font-family="Segoe UI, DejaVu Sans, sans-serif" font-size="18" font-weight="bold" text-anchor="middle">
+    <text x="82" y="216">Giveaway</text>
+    <text x="82" y="240">Scout</text>
+  </g>
+  <rect x="52" y="267" width="60" height="2" rx="1" fill="#77e7b8"/>
+</svg>

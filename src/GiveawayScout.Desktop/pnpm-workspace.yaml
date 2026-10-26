@@ -1,0 +1,9 @@
+packages:
+  - '.'
+
+# Keep installation fail-closed for any unreviewed lifecycle scripts.
+allowBuilds:
+  esbuild@0.28.2: true
+  # Browser tests use Chrome; Edge/Gecko drivers must not download at install time.
+  edgedriver: false
+  geckodriver: false

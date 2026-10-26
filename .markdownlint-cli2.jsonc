@@ -1,0 +1,23 @@
+{
+  "config": {
+    "MD013": false
+  },
+  "gitignore": false,
+  "ignores": [
+    "**/node_modules/**",
+    "**/target*/**",
+    "**/dist/**",
+    "**/dist-ssr/**",
+    "**/gen/**",
+    "**/bin/**",
+    "**/obj/**",
+    "artifacts/**",
+    "release-staging/**",
+    ".tools/**",
+    "private/**",
+    ".git/**",
+    ".agents/**",
+    ".codex/**",
+    ".aws/**"
+  ]
+}

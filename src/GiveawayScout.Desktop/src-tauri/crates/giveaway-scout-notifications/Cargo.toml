@@ -1,0 +1,17 @@
+[package]
+name = "giveaway-scout-notifications"
+version = "0.1.0"
+description = "Native notification transport and safe activation contracts"
+edition = "2024"
+rust-version = "1.99.1"
+
+[dependencies]
+log = "0.4.34"
+url = "2.5.8"
+uuid = "1.27.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
+objc2 = "0.6.5"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSObject", "NSString", "NSArray", "NSSet", "NSError", "NSBundle"] }
+objc2-user-notifications = { version = "0.3.2", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationSettings", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationTrigger", "UNNotificationResponse", "UNNotificationSound", "UNNotificationAction", "UNNotificationCategory"] }

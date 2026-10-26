@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta http-equiv="refresh" content="60">
+<title>Giveaway Scout — статистика</title>
+<style>
+  :root{color-scheme:dark;font:15px/1.5 system-ui,sans-serif;color:#e8ecf6;background:#151925}
+  *{box-sizing:border-box}body{max-width:1100px;margin:auto;padding:32px 24px}h1{font-size:26px;margin-bottom:4px}
+  p,article span{color:#aeb6c8}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:24px 0}
+  article,section{background:#202635;border:1px solid #343d50;border-radius:12px;padding:18px}article strong{display:block;font-size:36px;margin-top:8px}
+  .tables{display:grid;grid-template-columns:1fr 1fr;gap:16px}h2{font-size:18px;margin-top:0}table{width:100%;border-collapse:collapse}
+  th,td{text-align:left;padding:10px 6px;border-bottom:1px solid #343d50}th{color:#aeb6c8}td:last-child,th:last-child{text-align:right}
+  @media(max-width:700px){.tables{grid-template-columns:1fr}body{padding:20px 14px}h1{font-size:22px}}
+</style>
+<h1>Giveaway Scout — статистика</h1>
+<p>Дата UTC: __DATE__ · обновление раз в минуту</p>
+<div class="cards">__CARDS__</div>
+<div class="tables">
+  <section><h2>Версии активных установок за 30 дней</h2><table><thead><tr><th>Версия</th><th>Установки</th></tr></thead><tbody>__VERSIONS__</tbody></table></section>
+  <section><h2>Активность по дням (UTC)</h2><table><thead><tr><th>Дата</th><th>Установки</th></tr></thead><tbody>__DAILY__</tbody></table></section>
+</div>
+<p>Считаются установки обычной версии, которые смогли связаться с сервером. Это не точное количество людей: разные компьютеры и новые профили считаются отдельно. Dev-версии и автоматические тесты исключены.</p>
+<p>Срок хранения — 90 дней активности; неактивные установки удаляются. При первом подключении появляется новая запись, поэтому «впервые» не означает обязательно новую установку. Имена, почта, история раздач и открытые ссылки не собираются.</p>
+</html>

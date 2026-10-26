@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Giveaway Scout
+Exec=giveaway-scout
+Icon=giveaway-scout
+Terminal=false
+NoDisplay=true
+DBusActivatable=true
+X-GNOME-UsesNotifications=true
+StartupWMClass=giveaway-scout

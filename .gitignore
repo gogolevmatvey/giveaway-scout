@@ -1,0 +1,49 @@
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.db
+*.db-shm
+*.db-wal
+logs/
+appsettings.local.json
+artifacts/
+.tools/
+/node_modules/
+
+# Local assistant and machine configuration.
+/.agents/
+/.codex/
+/.aws/
+
+# Distribution files belong in release assets, not the source tree.
+/dist/
+/release-staging/
+*.orig
+
+# Local profiles and diagnostic output.
+*.log
+*.db-journal
+*.db.*
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+private/
+
+# Markdown-документы остаются локальными; README публикуются на любом уровне.
+*.md
+!README.md
+
+# Signing credentials must never be published with the sources.
+.env
+.env.*
+!.env.example
+*.key
+*.key.enc
+*.pfx
+*.p12
+*.pem

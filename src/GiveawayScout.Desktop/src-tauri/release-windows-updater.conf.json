@@ -1,0 +1,21 @@
+{
+  "bundle": {
+    "targets": [
+      "nsis"
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/gogolevmatvey/giveaway-scout/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE2N0Y4NDAwRTYyODZDM0QKUldROWJDam1BSVIvcGtJU3Ntcks2bnRTd2JFbjhVUjcwSnNSbi9wcWtINEFBQWNpNjBZWXBoNWkK",
+      "requireSignedVersion": true,
+      "allowDowngrades": false,
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

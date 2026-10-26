@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=com.giveawayscout.desktop
+Exec=/usr/bin/giveaway-scout --notification-service

@@ -1,0 +1,74 @@
+[package]
+name = "giveaway-scout"
+version = "1.0.1"
+description = "Cross-platform game giveaway monitor"
+edition = "2024"
+rust-version = "1.99.1"
+
+[workspace]
+members = ["crates/giveaway-scout-core", "crates/giveaway-scout-notifications", "crates/giveaway-scout-release-tools"]
+resolver = "3"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "giveaway_scout_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.1", features = [] }
+
+[features]
+ui-tests = ["dep:tauri-plugin-wdio-webdriver"]
+
+[dependencies]
+giveaway-scout-core = { path = "crates/giveaway-scout-core" }
+giveaway-scout-notifications = { path = "crates/giveaway-scout-notifications" }
+log = "0.4.34"
+tauri = { version = "2.12.2", features = ["tray-icon"] }
+tauri-plugin-wdio-webdriver = { version = "=1.5.0", optional = true }
+tauri-plugin-autostart = "2.7.0"
+tauri-plugin-deep-link = "2.6.1"
+tauri-plugin-log = "2.10.0"
+tauri-plugin-opener = "2.7.1"
+tauri-plugin-single-instance = { version = "2.5.3", features = ["deep-link"] }
+tauri-plugin-updater = { version = "2.14.0", default-features = false, features = ["system-proxy", "zip"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "system-proxy"] }
+base64 = "0.22.1"
+minisign-verify = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sys-locale = "0.3.2"
+time = { version = "0.3.55", features = ["formatting"] }
+tokio = { version = "1.53.0", features = ["macros", "sync", "time"] }
+url = "2.5.8"
+uuid = "1.22.0"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gio = "0.18.4"
+glib = "0.18.5"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Data_Xml_Dom", "UI_Notifications"] }
+windows-registry = "0.6.1"
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+notify-rust = "4.18.2"
+
+[dev-dependencies]
+giveaway-scout-release-tools = { path = "crates/giveaway-scout-release-tools" }
+tauri = { version = "2.12.2", features = ["test"] }
+minisign = "0.10.0"
+tempfile = "3.27.0"
+
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

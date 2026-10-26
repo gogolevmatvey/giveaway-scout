@@ -1,0 +1,179 @@
+name: Внутренняя сборка desktop-кандидата
+
+# Manual only. No secrets, release creation, tags or Pages deployment.
+on:
+  workflow_dispatch:
+    inputs:
+      build_packages:
+        description: Собрать внутренние пакеты после всех тестов
+        type: boolean
+        default: true
+      include_experimental:
+        description: Также проверить Windows ARM64, Linux и macOS (не публичный выпуск)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: desktop-candidate-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  NODE_VERSION: 24.21.0
+  PNPM_VERSION: 12.10.1
+  RUST_VERSION: 1.99.1
+  CARGO_BUILD_JOBS: 2
+
+jobs:
+  native:
+    name: ${{ matrix.id }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        # Default: only the platform the owner can currently test. Explicit
+        # opt-in preserves build checks for experimental ports, not acceptance.
+        include: ${{ fromJSON(inputs.include_experimental && '[{"id":"windows-x86_64","runner":"windows-2025","target":"x86_64-pc-windows-msvc","arch":"x64","bundles":"nsis"},{"id":"windows-aarch64","runner":"windows-11-arm","target":"aarch64-pc-windows-msvc","arch":"arm64","bundles":"nsis"},{"id":"darwin-aarch64","runner":"macos-14","target":"aarch64-apple-darwin","arch":"arm64","bundles":"app,dmg"}]' || '[{"id":"windows-x86_64","runner":"windows-2025","target":"x86_64-pc-windows-msvc","arch":"x64","bundles":"nsis"}]') }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      RUSTUP_TOOLCHAIN: 1.99.1-${{ matrix.target }}
+      CARGO_TARGET_DIR: ${{ github.workspace }}/src/GiveawayScout.Desktop/src-tauri/target-ci/${{ matrix.id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+      - name: Native MSVC
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/ci-msvc.ps1 -Architecture '${{ matrix.arch }}' -ExportToGitHub
+      - name: Pinned Rust
+        run: rustup toolchain install ${{ env.RUST_VERSION }}-${{ matrix.target }} --profile minimal --component clippy --component rustfmt
+      - name: Pinned pnpm
+        run: npm install --global pnpm@${{ env.PNPM_VERSION }} --ignore-scripts --no-audit --no-fund
+      - name: Verify native host and version pins
+        run: node scripts/ci-artifacts.mjs verify '${{ matrix.id }}'
+      - name: Install frontend
+        working-directory: src/GiveawayScout.Desktop
+        run: pnpm install --frozen-lockfile
+      - name: Frontend tests
+        working-directory: src/GiveawayScout.Desktop
+        run: pnpm test
+      - name: TypeScript and production frontend
+        working-directory: src/GiveawayScout.Desktop
+        run: pnpm build
+      - name: Artifact guard tests
+        run: node --test scripts/ci-artifacts.test.mjs scripts/prepare-github-updates.test.mjs scripts/installer-config.test.mjs
+      - name: Rust formatting
+        working-directory: src/GiveawayScout.Desktop/src-tauri
+        run: cargo fmt --all -- --check
+      - name: Rust tests
+        working-directory: src/GiveawayScout.Desktop/src-tauri
+        run: cargo test --workspace --locked
+      - name: Strict Clippy
+        working-directory: src/GiveawayScout.Desktop/src-tauri
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Internal packaging (not a signed public release)
+        if: inputs.build_packages
+        working-directory: src/GiveawayScout.Desktop
+        run: pnpm tauri build --bundles '${{ matrix.bundles }}' --config src-tauri/build-internal.conf.json -- --locked
+      - name: Check Windows x64 installer languages and resources
+        if: inputs.build_packages && matrix.id == 'windows-x86_64'
+        run: node scripts/check-installer-bundle.mjs
+      - name: Collect allowlisted files and SHA-256
+        if: inputs.build_packages
+        run: node scripts/ci-artifacts.mjs collect '${{ matrix.id }}'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: inputs.build_packages
+        with:
+          name: internal-${{ matrix.id }}
+          path: artifacts/internal/${{ matrix.id }}
+          if-no-files-found: error
+          retention-days: 7
+
+  linux:
+    if: inputs.include_experimental
+    name: ${{ matrix.id }} — Debian 12 userland
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: linux-x86_64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - id: linux-aarch64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    # Official multi-arch Rust image; native CPU, Debian 12/GLIBC 2.36.
+    container:
+      image: rust:1.99.1-bookworm@sha256:e12566d5abc17a0da741628782cdb504b68b8961f5bfcf677936bf3e8b32de29
+    env:
+      RUSTUP_TOOLCHAIN: 1.99.1-${{ matrix.target }}
+      CARGO_TARGET_DIR: ${{ github.workspace }}/src/GiveawayScout.Desktop/src-tauri/target-ci/${{ matrix.id }}
+      APPIMAGE_EXTRACT_AND_RUN: 1
+    steps:
+      - name: Debian dependencies (container only)
+        run: |
+          set -eu
+          apt-get update
+          apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev pkg-config patchelf xdg-utils python3 python3-gi dbus-bin dbus-daemon dbus-x11 apt-utils gnupg binutils
+          useradd --create-home giveaway-check
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+      - name: Rust components
+        run: rustup component add clippy rustfmt
+      - name: Pinned pnpm
+        run: npm install --global pnpm@${{ env.PNPM_VERSION }} --ignore-scripts --no-audit --no-fund
+      - name: Verify native host and version pins
+        run: node scripts/ci-artifacts.mjs verify '${{ matrix.id }}'
+      - name: Install frontend
+        working-directory: src/GiveawayScout.Desktop
+        run: pnpm install --frozen-lockfile
+      - name: Frontend tests
+        working-directory: src/GiveawayScout.Desktop
+        run: pnpm test
+      - name: TypeScript and production frontend
+        working-directory: src/GiveawayScout.Desktop
+        run: pnpm build
+      - name: Artifact guard tests
+        run: node --test scripts/ci-artifacts.test.mjs scripts/prepare-github-updates.test.mjs scripts/installer-config.test.mjs
+      - name: Rust formatting
+        working-directory: src/GiveawayScout.Desktop/src-tauri
+        run: cargo fmt --all -- --check
+      - name: Rust tests
+        working-directory: src/GiveawayScout.Desktop/src-tauri
+        run: cargo test --workspace --locked
+      - name: Strict Clippy
+        working-directory: src/GiveawayScout.Desktop/src-tauri
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Private D-Bus notifications
+        run: /usr/bin/python3 -B scripts/check-linux-notifications.py
+      - name: Private D-Bus activation
+        run: /usr/bin/python3 -B scripts/check-linux-activation.py
+      - name: Persistent notifications and sound policies
+        run: /usr/bin/python3 -B scripts/check-linux-persistent-notifications.py
+      - name: Isolated APT/GPG (unprivileged user)
+        run: runuser -u giveaway-check -- /usr/bin/python3 -B scripts/check-apt-repository.py
+      - name: Internal DEB and AppImage
+        if: inputs.build_packages
+        working-directory: src/GiveawayScout.Desktop
+        run: pnpm tauri build --bundles deb,appimage --config src-tauri/build-internal.conf.json -- --locked
+      - name: Check architecture/GLIBC and collect allowlisted files
+        if: inputs.build_packages
+        run: node scripts/ci-artifacts.mjs collect '${{ matrix.id }}'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: inputs.build_packages
+        with:
+          name: internal-${{ matrix.id }}
+          path: artifacts/internal/${{ matrix.id }}
+          if-no-files-found: error
+          retention-days: 7
