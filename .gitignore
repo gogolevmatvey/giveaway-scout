@@ -22,6 +22,9 @@ artifacts/
 /release-staging/
 *.orig
 
+# The statistics server is maintained outside this application repository.
+/server/telemetry/
+
 # Local profiles and diagnostic output.
 *.log
 *.db-journal
