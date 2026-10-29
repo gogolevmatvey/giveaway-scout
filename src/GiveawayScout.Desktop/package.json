@@ -1,7 +1,7 @@
 {
   "name": "giveaway-scout-desktop",
   "private": true,
-  "version": "1.0.1",
+  "version": "1.0.0",
   "type": "module",
   "packageManager": "pnpm@12.10.1",
   "scripts": {

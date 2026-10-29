@@ -1,6 +1,6 @@
 [package]
 name = "giveaway-scout"
-version = "1.0.1"
+version = "1.0.0"
 description = "Cross-platform game giveaway monitor"
 edition = "2024"
 rust-version = "1.99.1"
