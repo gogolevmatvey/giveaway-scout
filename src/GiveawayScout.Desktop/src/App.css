@@ -426,7 +426,55 @@ h2 {
   min-height: 0;
   height: 0;
   overflow: auto;
-  padding-right: 4px;
+  padding-right: 8px;
+  scrollbar-gutter: stable;
+}
+
+.history-list::-webkit-scrollbar,
+.settings-dialog-scrollable .settings-content::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+.history-list::-webkit-scrollbar-track,
+.history-list::-webkit-scrollbar-corner,
+.settings-dialog-scrollable .settings-content::-webkit-scrollbar-track,
+.settings-dialog-scrollable .settings-content::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.history-list::-webkit-scrollbar-thumb,
+.settings-dialog-scrollable .settings-content::-webkit-scrollbar-thumb {
+  min-height: 32px;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-color: #59667e;
+  background-clip: padding-box;
+}
+
+.history-list::-webkit-scrollbar-thumb:hover,
+.settings-dialog-scrollable .settings-content::-webkit-scrollbar-thumb:hover {
+  background-color: #7888a6;
+}
+
+.history-list::-webkit-scrollbar-thumb:active,
+.settings-dialog-scrollable .settings-content::-webkit-scrollbar-thumb:active {
+  background-color: #94a4c2;
+}
+
+.history-list::-webkit-scrollbar-button,
+.settings-dialog-scrollable .settings-content::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+@supports not selector(::-webkit-scrollbar) {
+  .history-list,
+  .settings-dialog-scrollable .settings-content {
+    scrollbar-width: thin;
+    scrollbar-color: #59667e transparent;
+  }
 }
 
 .history-item {
@@ -891,7 +939,8 @@ h2 {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 0 22px 16px;
+  margin: 0 18px 0 22px;
+  padding: 0 8px 16px 0;
   scrollbar-gutter: stable;
 }
 
