@@ -41,6 +41,9 @@ private/
 *.md
 !README.md
 
+# Local social media draft.
+/Пост для соцсетей.txt
+
 # Signing credentials must never be published with the sources.
 .env
 .env.*
