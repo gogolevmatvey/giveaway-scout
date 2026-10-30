@@ -2,7 +2,7 @@
 
 Приложение для отслеживания раздач игр и розыгрышей на Givee Club, Games for Farm и Zeros. Сообщает о новых раздачах с помощью системных уведомлений.
 
-Платформа — Windows x64.
+[Скачать для Windows](https://github.com/gogolevmatvey/giveaway-scout/releases/latest)
 
 ## Возможности
 
