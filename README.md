@@ -4,6 +4,8 @@
 
 [Скачать для Windows](https://github.com/gogolevmatvey/giveaway-scout/releases/latest)
 
+![Главное окно Giveaway Scout: источники и история уведомлений](docs/images/giveaway-scout.png)
+
 ## Возможности
 
 - Уведомления о новых раздачах игр и розыгрышах с переходом на страницу раздачи.
