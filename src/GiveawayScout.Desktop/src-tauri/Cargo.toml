@@ -1,5 +1,6 @@
 [package]
 name = "giveaway-scout"
+license = "MIT"
 version = "1.0.0"
 description = "Cross-platform game giveaway monitor"
 edition = "2024"

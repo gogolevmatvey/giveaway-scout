@@ -65,3 +65,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
 Portable EXE и NSIS-установщик появятся в `src/GiveawayScout.Desktop/src-tauri/target-windows-x64-next/release/`. Обычная внутренняя сборка не подключает канал обновлений.
+
+## Лицензия
+
+[MIT](LICENSE).

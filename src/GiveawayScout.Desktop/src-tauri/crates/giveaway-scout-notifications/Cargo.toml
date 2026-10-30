@@ -1,5 +1,6 @@
 [package]
 name = "giveaway-scout-notifications"
+license = "MIT"
 version = "0.1.0"
 description = "Native notification transport and safe activation contracts"
 edition = "2024"
