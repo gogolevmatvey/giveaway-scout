@@ -1,4 +1,3 @@
-mod legacy;
 mod usage_statistics;
 
 pub use usage_statistics::UsageStatisticsRequest;
@@ -16,19 +15,15 @@ use rusqlite::{
 use serde::Serialize;
 use thiserror::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
-use url::Url;
 use uuid::Uuid;
 
 use crate::models::{
     AppSettings, DataCounts, DiscoveryResult, GiveawayItem, GiveawaySource, InitialSyncMode,
     NotificationRecord,
 };
-use legacy::{LegacyData, LegacyNotification, LegacySettings};
 
-const LEGACY_MIGRATION_KEY: &str = "legacy_json_import_v1";
 const TRACKING_INITIALIZED_KEY: &str = "tracking_initialized";
 const FORCE_SILENT_BASELINE_KEY: &str = "force_silent_baseline";
-const SERVICE_SETTINGS_URL: &str = "https://freeanywhere.net/user#settings";
 
 // A single policy for both queue snapshots and the final per-record recheck.
 // Read records retain their actual delivery state, but are no longer retried.
@@ -122,26 +117,8 @@ pub enum StorageError {
         #[source]
         source: std::io::Error,
     },
-    #[error("could not read legacy file {path}: {source}")]
-    ReadLegacyFile {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("could not parse legacy file {path}: {source}")]
-    ParseLegacyFile {
-        path: PathBuf,
-        #[source]
-        source: serde_json::Error,
-    },
-    #[error("invalid legacy data: {0}")]
-    InvalidLegacyData(String),
     #[error("could not format timestamp: {0}")]
     FormatTimestamp(#[from] time::error::Format),
-    #[error("could not parse timestamp: {0}")]
-    ParseTimestamp(#[from] time::error::Parse),
-    #[error("invalid giveaway URL: {0}")]
-    InvalidUrl(#[from] url::ParseError),
     #[error("invalid settings: {0}")]
     InvalidSettings(String),
     #[error("discovered items must belong to successfully checked sources")]
@@ -181,16 +158,6 @@ impl StorageError {
 pub struct DatabaseRecoveryReport {
     pub backup_path: String,
     pub original_error: String,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LegacyImportReport {
-    pub already_completed: bool,
-    pub settings_imported: bool,
-    pub tracked_imported: u64,
-    pub notifications_imported: u64,
-    pub service_entries_skipped: u64,
 }
 
 pub struct Database {
@@ -561,19 +528,6 @@ impl Database {
         })
     }
 
-    pub fn contains_tracking_key(&self, key: &str) -> Result<bool, StorageError> {
-        let found = self
-            .connection
-            .query_row(
-                "SELECT 1 FROM tracked_giveaways WHERE tracking_key = ?1",
-                [key],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some();
-        Ok(found)
-    }
-
     pub fn tracking_initialized(&self) -> Result<bool, StorageError> {
         Ok(self
             .connection
@@ -668,10 +622,6 @@ impl Database {
         for item in unique_items {
             let tracking_key = item.tracking_key();
             if tracking_key_exists(&transaction, &tracking_key)? {
-                continue;
-            }
-
-            if migrate_runtime_legacy_keys(&transaction, item, &tracking_key)? {
                 continue;
             }
 
@@ -825,81 +775,6 @@ impl Database {
         )? as u64)
     }
 
-    pub fn legacy_migration_completed(&self) -> Result<bool, StorageError> {
-        Ok(self
-            .connection
-            .query_row(
-                "SELECT 1 FROM app_metadata WHERE key = ?1",
-                [LEGACY_MIGRATION_KEY],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some())
-    }
-
-    pub fn migrate_legacy_json(
-        &mut self,
-        legacy_directory: impl AsRef<Path>,
-    ) -> Result<LegacyImportReport, StorageError> {
-        if self.legacy_migration_completed()? {
-            return Ok(LegacyImportReport {
-                already_completed: true,
-                ..LegacyImportReport::default()
-            });
-        }
-
-        let legacy = LegacyData::load(legacy_directory.as_ref())?;
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut report = LegacyImportReport::default();
-
-        if let Some(settings) = legacy.settings.as_ref() {
-            import_settings(&transaction, settings)?;
-            report.settings_imported = true;
-        }
-
-        if let Some(tracking) = legacy.tracking.as_ref() {
-            for (key, item) in &tracking.items {
-                let Some((canonical_key, source, source_id)) = normalize_tracking_key(key)? else {
-                    report.service_entries_skipped += 1;
-                    continue;
-                };
-                let first_seen_utc = normalize_timestamp(&item.first_seen_utc)?;
-                report.tracked_imported += transaction.execute(
-                    r#"INSERT OR IGNORE INTO tracked_giveaways(
-                        tracking_key, source, source_id, title, first_seen_utc
-                    ) VALUES (?1, ?2, ?3, ?4, ?5)"#,
-                    params![canonical_key, source, source_id, item.title, first_seen_utc],
-                )? as u64;
-            }
-
-            set_metadata(
-                &transaction,
-                TRACKING_INITIALIZED_KEY,
-                if tracking.is_initialized {
-                    "true"
-                } else {
-                    "false"
-                },
-            )?;
-        }
-
-        for notification in &legacy.notifications {
-            if is_service_notification(notification) {
-                report.service_entries_skipped += 1;
-                continue;
-            }
-            import_notification(&transaction, notification, &mut report)?;
-        }
-
-        import_known_source_baselines(&transaction)?;
-
-        set_metadata(&transaction, LEGACY_MIGRATION_KEY, &now_utc()?)?;
-        transaction.commit()?;
-        Ok(report)
-    }
-
     pub fn clear_giveaway_data(&mut self) -> Result<(), StorageError> {
         let transaction = self
             .connection
@@ -1024,37 +899,6 @@ fn notification_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Notificati
     })
 }
 
-fn import_settings(
-    transaction: &Transaction<'_>,
-    legacy: &LegacySettings,
-) -> Result<(), StorageError> {
-    let language_code = legacy
-        .language_code
-        .as_deref()
-        .filter(|value| matches!(*value, "ru" | "en"));
-    transaction.execute(
-        r#"UPDATE settings SET
-            check_interval_minutes = ?1,
-            givee_club_enabled = ?2,
-            games_for_farm_enabled = ?3,
-            notification_sound_enabled = ?4,
-            start_at_login = ?5,
-            language_code = ?6,
-            updated_at_utc = ?7
-        WHERE id = 1"#,
-        params![
-            legacy.check_interval_minutes.max(5),
-            legacy.givee_club_enabled,
-            legacy.games_for_farm_enabled,
-            legacy.notification_sound_enabled,
-            legacy.start_with_windows,
-            language_code,
-            now_utc()?,
-        ],
-    )?;
-    Ok(())
-}
-
 fn tracking_key_exists(
     transaction: &Transaction<'_>,
     tracking_key: &str,
@@ -1067,192 +911,6 @@ fn tracking_key_exists(
         )
         .optional()?
         .is_some())
-}
-
-fn migrate_runtime_legacy_keys(
-    transaction: &Transaction<'_>,
-    item: &GiveawayItem,
-    canonical_key: &str,
-) -> Result<bool, StorageError> {
-    if item.legacy_tracking_key_prefixes.is_empty() {
-        return Ok(false);
-    }
-
-    let mut statement = transaction
-        .prepare("SELECT tracking_key, first_seen_utc FROM tracked_giveaways WHERE source = ?1")?;
-    let rows = statement.query_map([item.source.storage_name()], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?;
-    let mut legacy_keys = Vec::new();
-    let mut first_seen_utc: Option<String> = None;
-    for row in rows {
-        let (key, seen_at) = row?;
-        if item
-            .legacy_tracking_key_prefixes
-            .iter()
-            .any(|prefix| key.starts_with(prefix))
-        {
-            if first_seen_utc
-                .as_ref()
-                .is_none_or(|current| seen_at < *current)
-            {
-                first_seen_utc = Some(seen_at);
-            }
-            legacy_keys.push(key);
-        }
-    }
-    drop(statement);
-
-    if legacy_keys.is_empty() {
-        return Ok(false);
-    }
-
-    for key in legacy_keys {
-        transaction.execute(
-            "DELETE FROM tracked_giveaways WHERE tracking_key = ?1",
-            [key],
-        )?;
-    }
-    transaction.execute(
-        r#"INSERT INTO tracked_giveaways(
-            tracking_key, source, source_id, title, first_seen_utc
-        ) VALUES (?1, ?2, ?3, ?4, ?5)"#,
-        params![
-            canonical_key,
-            item.source.storage_name(),
-            item.source_id,
-            item.title,
-            first_seen_utc.expect("legacy key should have a timestamp"),
-        ],
-    )?;
-    Ok(true)
-}
-
-fn import_notification(
-    transaction: &Transaction<'_>,
-    legacy: &LegacyNotification,
-    report: &mut LegacyImportReport,
-) -> Result<(), StorageError> {
-    let id = Uuid::parse_str(&legacy.id)
-        .map_err(|error| {
-            StorageError::InvalidLegacyData(format!("invalid notification id: {error}"))
-        })?
-        .hyphenated()
-        .to_string();
-    let source = source_from_legacy(legacy.source)?;
-    let kind = kind_from_legacy(legacy.kind)?;
-    let received_at_utc = normalize_timestamp(&legacy.received_at)?;
-    let tracking_key = tracking_key_for_url(source, &legacy.url)?;
-    let read_at_utc = legacy.is_read.then_some(received_at_utc.as_str());
-
-    report.notifications_imported += transaction.execute(
-        r#"INSERT OR IGNORE INTO notification_history(
-            id, tracking_key, source, kind, title, url, received_at_utc, read_at_utc,
-            delivery_state, delivery_attempts, last_delivery_error
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'delivered', 1, NULL)"#,
-        params![
-            id,
-            tracking_key,
-            source,
-            kind,
-            legacy.title,
-            legacy.url,
-            received_at_utc,
-            read_at_utc,
-        ],
-    )? as u64;
-    Ok(())
-}
-
-fn normalize_tracking_key(
-    key: &str,
-) -> Result<Option<(String, &'static str, String)>, StorageError> {
-    let (source, remainder) = key.split_once(':').ok_or_else(|| {
-        StorageError::InvalidLegacyData(format!("tracking key has no source: {key}"))
-    })?;
-
-    match source {
-        "GiveeClub" => Ok(Some((key.to_owned(), "giveeClub", remainder.to_owned()))),
-        "GamesForFarm" => {
-            let (source_id, had_legacy_shape) = if let Some(value) = remainder
-                .strip_prefix("Giveaway:")
-                .or_else(|| remainder.strip_prefix("Raffle:"))
-            {
-                (value.split_once(':').map_or(value, |(url, _)| url), true)
-            } else {
-                (remainder, false)
-            };
-
-            if source_id.eq_ignore_ascii_case("/user#settings") {
-                return Ok(None);
-            }
-
-            if !source_id.starts_with('/') {
-                return Err(StorageError::InvalidLegacyData(format!(
-                    "invalid Games for Farm tracking key: {key}"
-                )));
-            }
-
-            let canonical_key = if had_legacy_shape {
-                format!("GamesForFarm:{source_id}")
-            } else {
-                key.to_owned()
-            };
-            Ok(Some((canonical_key, "gamesForFarm", source_id.to_owned())))
-        }
-        _ => Err(StorageError::InvalidLegacyData(format!(
-            "unknown tracking source in key: {key}"
-        ))),
-    }
-}
-
-fn tracking_key_for_url(source: &str, value: &str) -> Result<String, StorageError> {
-    let url = Url::parse(value)?;
-    if !matches!(url.scheme(), "http" | "https") {
-        return Err(StorageError::InvalidLegacyData(format!(
-            "unsupported URL scheme in {value}"
-        )));
-    }
-
-    let path_and_query = match url.query() {
-        Some(query) => format!("{}?{query}", url.path()),
-        None => url.path().to_owned(),
-    };
-
-    match source {
-        "giveeClub" => Ok(format!(
-            "GiveeClub:{}",
-            path_and_query.trim_start_matches('/')
-        )),
-        "gamesForFarm" => Ok(format!("GamesForFarm:{path_and_query}")),
-        _ => Err(StorageError::InvalidLegacyData(format!(
-            "unknown notification source: {source}"
-        ))),
-    }
-}
-
-fn source_from_legacy(source: i64) -> Result<&'static str, StorageError> {
-    match source {
-        0 => Ok("giveeClub"),
-        1 => Ok("gamesForFarm"),
-        _ => Err(StorageError::InvalidLegacyData(format!(
-            "unknown notification source value: {source}"
-        ))),
-    }
-}
-
-fn kind_from_legacy(kind: i64) -> Result<&'static str, StorageError> {
-    match kind {
-        0 => Ok("giveaway"),
-        1 => Ok("raffle"),
-        _ => Err(StorageError::InvalidLegacyData(format!(
-            "unknown notification kind value: {kind}"
-        ))),
-    }
-}
-
-fn is_service_notification(notification: &LegacyNotification) -> bool {
-    notification.source == 1 && notification.url.eq_ignore_ascii_case(SERVICE_SETTINGS_URL)
 }
 
 fn set_metadata(transaction: &Transaction<'_>, key: &str, value: &str) -> Result<(), StorageError> {
@@ -1276,10 +934,6 @@ fn metadata_value(
         )
         .optional()
         .map_err(StorageError::from)
-}
-
-fn normalize_timestamp(value: &str) -> Result<String, StorageError> {
-    Ok(OffsetDateTime::parse(value, &Rfc3339)?.format(&Rfc3339)?)
 }
 
 fn now_utc() -> Result<String, StorageError> {

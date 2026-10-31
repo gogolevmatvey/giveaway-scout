@@ -66,7 +66,6 @@ pub fn parse_givee_club(html: &str) -> Result<Vec<GiveawayItem>, SourceParseErro
                 .select(&details_selector)
                 .next()
                 .and_then(|element| normalize_text(element.text())),
-            legacy_tracking_key_prefixes: Vec::new(),
         });
     }
 

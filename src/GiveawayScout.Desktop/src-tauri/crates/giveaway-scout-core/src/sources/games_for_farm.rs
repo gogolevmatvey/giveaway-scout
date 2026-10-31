@@ -67,16 +67,6 @@ fn parse_cards(
             continue;
         }
         let title = normalize_text(title_link.text()).ok_or_else(|| incomplete("title"))?;
-        let legacy_tracking_key_prefixes = [GiveawayKind::Giveaway, GiveawayKind::Raffle]
-            .map(|legacy_kind| {
-                format!(
-                    "{}:{}:{relative_url}:",
-                    GiveawaySource::GamesForFarm.tracking_prefix(),
-                    legacy_kind.legacy_name()
-                )
-            })
-            .to_vec();
-
         items.push(GiveawayItem {
             source: GiveawaySource::GamesForFarm,
             source_id: relative_url.to_owned(),
@@ -100,7 +90,6 @@ fn parse_cards(
                 .select(&details_selector)
                 .next()
                 .and_then(|element| normalize_text(element.text())),
-            legacy_tracking_key_prefixes,
         });
     }
 

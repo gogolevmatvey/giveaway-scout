@@ -83,13 +83,6 @@ fn games_for_farm_parser_skips_service_cards_and_uses_stable_link_key() {
     for item in &items {
         assert_eq!(item.source_id, "/game?n=42");
         assert_eq!(item.tracking_key(), "GamesForFarm:/game?n=42");
-        assert_eq!(
-            item.legacy_tracking_key_prefixes,
-            [
-                "GamesForFarm:Giveaway:/game?n=42:",
-                "GamesForFarm:Raffle:/game?n=42:",
-            ]
-        );
     }
 }
 

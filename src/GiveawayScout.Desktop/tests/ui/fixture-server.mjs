@@ -16,10 +16,10 @@ window.__uiTest = {calls:[],unexpected:[],monitor,failSettingsWrites:0};
 window.__TAURI_INTERNALS__ = {transformCallback:()=>1,unregisterCallback:()=>{},invoke:async(command,args)=>{
   window.__uiTest.calls.push({command,args});
   switch(command) {
-    case 'get_app_state': return {appName:'Giveaway Scout',version:'1.0.0',platform:'windows',architecture:'x86_64',migrationPhase:'monitoring',isDevelopment:new URLSearchParams(location.search).has('dev')};
+    case 'get_app_state': return {appName:'Giveaway Scout',version:'1.0.0',platform:'windows',architecture:'x86_64',isDevelopment:new URLSearchParams(location.search).has('dev')};
     case 'get_update_state': return {mode:'development',phase:'idle',currentVersion:'0.1.0',candidate:null,downloadedBytes:0,totalBytes:null,lastCheckedAtUtc:null,lastError:null};
     case 'get_notification_history': return history;
-    case 'get_storage_snapshot': return {settings:structuredClone(settings),counts:{trackedGiveaways:2,notificationHistory:0,unreadNotifications:0},dataSizeBytes:8192,databaseRecovery:null,initialSyncChoiceRequired:false,legacyImport:null,migrationError:null,monitor:structuredClone(monitor)};
+    case 'get_storage_snapshot': return {settings:structuredClone(settings),counts:{trackedGiveaways:2,notificationHistory:0,unreadNotifications:0},dataSizeBytes:8192,databaseRecovery:null,initialSyncChoiceRequired:false,monitor:structuredClone(monitor)};
     case 'update_settings':
       if (window.__uiTest.pauseSettingsWrite) {
         await new Promise(resolve => { window.__uiTest.finishSettingsWrite = resolve; });

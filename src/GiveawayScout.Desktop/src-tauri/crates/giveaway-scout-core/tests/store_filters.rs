@@ -16,7 +16,6 @@ fn items() -> Vec<GiveawayItem> {
                     kind: GiveawayKind::Giveaway,
                     store,
                     details: None,
-                    legacy_tracking_key_prefixes: Vec::new(),
                 })
         })
         .collect()

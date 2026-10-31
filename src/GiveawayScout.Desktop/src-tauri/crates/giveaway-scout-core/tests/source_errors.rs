@@ -49,13 +49,13 @@ fn http_codes_are_taken_from_the_real_reqwest_error() {
 }
 
 #[test]
-fn ipc_uses_structured_reasons_and_old_payloads_fall_back_to_unknown() {
+fn ipc_uses_structured_reasons_and_incomplete_payloads_fall_back_to_unknown() {
     let failure =
         SourceFailure::from_fetch(GiveawaySource::Zeros, PageFetchError::ZerosConnectionLimit);
     let json = serde_json::to_value(&failure).unwrap();
     assert_eq!(json["source"], "zeros");
     assert_eq!(json["reason"]["code"], "zerosConnectionLimit");
-    let old: SourceFailure =
-        serde_json::from_str(r#"{"source":"zeros","message":"legacy diagnostic"}"#).unwrap();
-    assert_eq!(old.reason, SourceFailureReason::Unknown);
+    let incomplete: SourceFailure =
+        serde_json::from_str(r#"{"source":"zeros","message":"diagnostic"}"#).unwrap();
+    assert_eq!(incomplete.reason, SourceFailureReason::Unknown);
 }

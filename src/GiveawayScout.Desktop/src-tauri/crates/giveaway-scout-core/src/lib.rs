@@ -20,7 +20,7 @@ pub use sources::{
     GAMES_FOR_FARM_FEED_URL, GIVEE_CLUB_FEED_URL, SourceParseError, ZEROS_FEED_URL,
     parse_games_for_farm, parse_givee_club, parse_zeros,
 };
-pub use storage::{Database, DatabaseRecoveryReport, LegacyImportReport, StorageError};
+pub use storage::{Database, DatabaseRecoveryReport, StorageError};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,7 +29,6 @@ pub struct AppState {
     pub version: &'static str,
     pub platform: &'static str,
     pub architecture: &'static str,
-    pub migration_phase: &'static str,
     pub is_development: bool,
 }
 
@@ -45,7 +44,6 @@ impl AppState {
             version,
             platform,
             architecture,
-            migration_phase: "monitoring",
             is_development,
         }
     }
@@ -64,7 +62,6 @@ mod tests {
         assert_eq!(json["version"], "0.1.0");
         assert_eq!(json["platform"], "linux");
         assert_eq!(json["architecture"], "x86_64");
-        assert_eq!(json["migrationPhase"], "monitoring");
         assert_eq!(json["isDevelopment"], true);
     }
 }

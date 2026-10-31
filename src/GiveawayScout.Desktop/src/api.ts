@@ -35,7 +35,6 @@ export interface AppState {
   version: string;
   platform: string;
   architecture: string;
-  migrationPhase: "monitoring";
   isDevelopment: boolean;
 }
 
@@ -65,14 +64,6 @@ export interface DataCounts {
   unreadNotifications: number;
 }
 
-export interface LegacyImportReport {
-  alreadyCompleted: boolean;
-  settingsImported: boolean;
-  trackedImported: number;
-  notificationsImported: number;
-  serviceEntriesSkipped: number;
-}
-
 export interface DatabaseRecoveryReport {
   backupPath: string;
   originalError: string;
@@ -84,8 +75,6 @@ export interface StorageSnapshot {
   dataSizeBytes: number;
   databaseRecovery: DatabaseRecoveryReport | null;
   initialSyncChoiceRequired: boolean;
-  legacyImport: LegacyImportReport | null;
-  migrationError: string | null;
   monitor: MonitorSnapshot;
 }
 
@@ -108,7 +97,6 @@ export interface GiveawayItem {
   kind: "giveaway" | "raffle";
   store: "steam" | "epicGames" | "unknown";
   details: string | null;
-  legacyTrackingKeyPrefixes: string[];
 }
 
 export interface SourceFailure {

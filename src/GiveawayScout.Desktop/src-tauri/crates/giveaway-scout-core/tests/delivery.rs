@@ -20,7 +20,6 @@ fn items() -> Vec<GiveawayItem> {
                     url: "https://example.invalid/game".to_owned(),
                     kind: GiveawayKind::Giveaway,
                     details: None,
-                    legacy_tracking_key_prefixes: Vec::new(),
                 })
         })
         .collect()

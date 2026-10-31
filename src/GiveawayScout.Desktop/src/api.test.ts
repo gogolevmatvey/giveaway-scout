@@ -52,7 +52,6 @@ describe("desktop API", () => {
       version: "0.1.0",
       platform: "linux",
       architecture: "x86_64",
-      migrationPhase: "monitoring" as const,
       isDevelopment: true,
     };
     vi.mocked(invoke).mockResolvedValue(expected);
@@ -88,8 +87,6 @@ describe("desktop API", () => {
       dataSizeBytes: 4096,
       databaseRecovery: null,
       initialSyncChoiceRequired: true,
-      legacyImport: null,
-      migrationError: null,
       monitor: {
         isChecking: false,
         lastStartedAtUtc: null,

@@ -38,7 +38,7 @@ it.each([
   expect(text).not.toContain(failure.message);
 });
 
-it.each(["ru", "en"] as const)("unknown and legacy failures in %s never expose raw diagnostics", lng => {
+it.each(["ru", "en"] as const)("unknown and incomplete failures in %s never expose raw diagnostics", lng => {
   for (const reason of [undefined, {code:"futureError"}, {code:"unknown"}, {code:"http",status:NaN}]) {
     const failure = { source:"gamesForFarm", message:"RAW_DIAGNOSTIC",reason } as SourceFailure;
     expect(sourceFailureText(failure,instance.getFixedT(lng)))

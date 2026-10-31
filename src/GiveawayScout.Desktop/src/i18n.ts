@@ -10,9 +10,7 @@ const resources = {
       statusChecking: "Проверяем источники…",
       statusActive: "Мониторинг работает",
       statusUnavailable: "Мониторинг недоступен",
-      statusMigrationFailed: "Перенос старых данных не завершён",
       statusWaitingInitialMode: "Выберите режим первой проверки",
-      migrationError: "Ошибка переноса старых данных",
       databaseRecoveryTitle: "Повреждённая база данных сохранена",
       databaseRecoveryDescription:
         "Giveaway Scout не смог безопасно прочитать прежнюю базу и создал новую пустую базу. Повреждённый файл не удалён безвозвратно.",
@@ -180,9 +178,7 @@ const resources = {
       statusChecking: "Checking sources…",
       statusActive: "Monitoring is active",
       statusUnavailable: "Monitoring is unavailable",
-      statusMigrationFailed: "Legacy data migration is incomplete",
       statusWaitingInitialMode: "Choose the first-check mode",
-      migrationError: "Legacy data migration failed",
       databaseRecoveryTitle: "The damaged database was preserved",
       databaseRecoveryDescription:
         "Giveaway Scout could not safely read the previous database and created a new empty database. The damaged file was not permanently deleted.",

@@ -83,10 +83,7 @@ function App() {
   const updatePhase = updates.data?.phase;
   const updateInstalling = updatePhase === "downloading" || updatePhase === "installing" || installUpdateMutation.isPending;
   const updateBusy = updateInstalling || updatePhase === "checking" || checkUpdatesMutation.isPending;
-  const storageReady =
-    storageState.isSuccess &&
-    storageState.data.migrationError === null &&
-    !storageState.data.initialSyncChoiceRequired;
+  const storageReady = storageState.isSuccess && !storageState.data.initialSyncChoiceRequired;
   const checkMutation = useMutation({
     mutationFn: checkNow,
     onSuccess: async () => {
@@ -140,7 +137,7 @@ function App() {
     },
   });
   const hasStatusError =
-    appState.isError || storageState.isError || Boolean(storageState.data?.migrationError) ||
+    appState.isError || storageState.isError ||
     Boolean(storageState.data?.monitor.lastError);
   const sourceFailures = storageState.data?.monitor.sourceFailures ?? [];
   const isChecking = Boolean(storageState.data?.monitor.isChecking);
@@ -254,17 +251,12 @@ function App() {
               ? t("statusStarting")
               : appState.isError || storageState.isError
                 ? t("statusUnavailable")
-                : storageState.data?.migrationError
-                  ? t("statusMigrationFailed")
-                  : storageState.data?.initialSyncChoiceRequired
-                    ? t("statusWaitingInitialMode")
+                : storageState.data?.initialSyncChoiceRequired
+                  ? t("statusWaitingInitialMode")
                   : isChecking
                     ? t("statusChecking")
                     : t("statusActive")}
           </strong>
-          {storageState.data?.migrationError && (
-            <span>{t("migrationError")}. {t("diagnosticsHint")}</span>
-          )}
           {storageState.data?.monitor.lastSuccessfulCheckUtc && (
             <span>
               {t("lastSuccessfulCheck")}: {formatCheckTime(

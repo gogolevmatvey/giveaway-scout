@@ -150,7 +150,6 @@ fn parse_at(json: &str, now: OffsetDateTime) -> Result<Vec<GiveawayItem>, Source
             kind: GiveawayKind::Giveaway,
             store: GameStore::Steam,
             details: None,
-            legacy_tracking_key_prefixes: Vec::new(),
         });
     }
     Ok(items)

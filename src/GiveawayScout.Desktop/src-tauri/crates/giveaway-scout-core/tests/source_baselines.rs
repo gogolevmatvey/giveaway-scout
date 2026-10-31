@@ -27,7 +27,6 @@ fn item(source: GiveawaySource, id: u32) -> GiveawayItem {
         kind: GiveawayKind::Giveaway,
         store: GameStore::Steam,
         details: None,
-        legacy_tracking_key_prefixes: Vec::new(),
     }
 }
 

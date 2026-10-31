@@ -79,13 +79,6 @@ impl InitialSyncMode {
 }
 
 impl GiveawayKind {
-    pub const fn legacy_name(self) -> &'static str {
-        match self {
-            Self::Giveaway => "Giveaway",
-            Self::Raffle => "Raffle",
-        }
-    }
-
     pub const fn storage_name(self) -> &'static str {
         match self {
             Self::Giveaway => "giveaway",
@@ -105,7 +98,6 @@ pub struct GiveawayItem {
     #[serde(default)]
     pub store: GameStore,
     pub details: Option<String>,
-    pub legacy_tracking_key_prefixes: Vec<String>,
 }
 
 impl GiveawayItem {

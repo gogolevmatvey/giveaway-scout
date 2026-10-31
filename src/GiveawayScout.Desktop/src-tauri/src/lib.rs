@@ -23,14 +23,14 @@ mod usage_statistics;
 #[cfg(target_os = "windows")]
 mod windows_installation;
 
-use std::{path::PathBuf, sync::Mutex, time::Duration};
+use std::{sync::Mutex, time::Duration};
 
 #[cfg(not(feature = "ui-tests"))]
 use giveaway_scout_core::HttpPageFetcher;
 use giveaway_scout_core::{
     AppSettings, AppState, DataCounts, Database, DatabaseRecoveryReport, GiveawaySource,
-    LegacyImportReport, MonitoringOutcome, NotificationRecord, SourceFailure, apply_source_check,
-    check_sources, dispatch_pending_notifications,
+    MonitoringOutcome, NotificationRecord, SourceFailure, apply_source_check, check_sources,
+    dispatch_pending_notifications,
 };
 use serde::Serialize;
 #[cfg(not(feature = "ui-tests"))]
@@ -55,8 +55,6 @@ use crate::operations::DataOperationGate;
 struct StorageState {
     database: Mutex<Database>,
     database_recovery: Option<DatabaseRecoveryReport>,
-    legacy_import: Option<LegacyImportReport>,
-    migration_error: Option<String>,
 }
 
 struct MonitorState {
@@ -108,8 +106,6 @@ struct StorageSnapshot {
     data_size_bytes: u64,
     database_recovery: Option<DatabaseRecoveryReport>,
     initial_sync_choice_required: bool,
-    legacy_import: Option<LegacyImportReport>,
-    migration_error: Option<String>,
     monitor: MonitorSnapshot,
 }
 
@@ -241,8 +237,6 @@ fn get_storage_snapshot(
         initial_sync_choice_required: database
             .initial_sync_choice_required()
             .map_err(|error| error.to_string())?,
-        legacy_import: storage.legacy_import,
-        migration_error: storage.migration_error.clone(),
         monitor: monitor_snapshot,
     })
 }
@@ -404,7 +398,7 @@ fn sync_autostart(app: &AppHandle, enabled: bool) -> Result<(), String> {
 
     let manager = app.autolaunch();
     if enabled {
-        // Re-register even when an entry already exists so an imported WPF entry or a moved
+        // Re-register even when an entry already exists so an existing entry or a moved
         // portable executable is updated to the current Tauri binary and arguments.
         manager.enable().map_err(|error| error.to_string())
     } else {
@@ -815,14 +809,6 @@ async fn perform_check(
         log::warn!("giveaway check skipped because a check or data cleanup is already running");
         return Err("data operation is already running".to_owned());
     };
-    if let Some(error) = storage.migration_error.as_ref() {
-        let result = Err(format!(
-            "legacy data migration must be resolved first: {error}"
-        ));
-        log::error!("giveaway check blocked by legacy migration error: {error}");
-        record_finished(monitor, &result);
-        return result;
-    }
     if storage
         .database
         .lock()
@@ -934,18 +920,6 @@ async fn monitor_loop(app_handle: tauri::AppHandle) {
     }
 }
 
-#[cfg(all(target_os = "windows", not(feature = "ui-tests")))]
-fn legacy_data_directory() -> Option<PathBuf> {
-    std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .map(|path| path.join("GiveawayScout"))
-}
-
-#[cfg(any(not(target_os = "windows"), feature = "ui-tests"))]
-fn legacy_data_directory() -> Option<PathBuf> {
-    None
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut context = tauri::generate_context!();
@@ -1043,7 +1017,7 @@ pub fn run() {
             let data_directory = ui_tests::profile().root.join("data");
             #[cfg(feature = "ui-tests")]
             let new_profile = !data_directory.join("giveaway-scout.db").exists();
-            let (mut database, database_recovery) =
+            let (database, database_recovery) =
                 Database::open_with_recovery(data_directory.join("giveaway-scout.db"))?;
             #[cfg(feature = "ui-tests")]
             if new_profile { database.update_settings(&ui_tests::seed_settings())?; }
@@ -1054,27 +1028,6 @@ pub fn run() {
                     recovery.original_error
                 );
             }
-            let (legacy_import, migration_error) = match legacy_data_directory() {
-                Some(path) => match database.migrate_legacy_json(path) {
-                    Ok(report) => (Some(report), None),
-                    Err(error) => (None, Some(error.to_string())),
-                },
-                None => (None, None),
-            };
-
-            if let Some(report) = legacy_import {
-                log::info!(
-                    "legacy data import finished: settings={}, tracked={}, notifications={}, skipped={}",
-                    report.settings_imported,
-                    report.tracked_imported,
-                    report.notifications_imported,
-                    report.service_entries_skipped
-                );
-            }
-            if let Some(error) = migration_error.as_ref() {
-                log::error!("legacy data import failed: {error}");
-            }
-
             let settings = database.settings()?;
             let initial_sync_choice_required = database.initial_sync_choice_required()?;
             apply_log_level(settings.verbose_logging);
@@ -1082,8 +1035,6 @@ pub fn run() {
             app.manage(StorageState {
                 database: Mutex::new(database),
                 database_recovery,
-                legacy_import,
-                migration_error,
             });
             app.manage(MonitorState {
                 fetcher: Mutex::new(HttpPageFetcher::with_policy(
