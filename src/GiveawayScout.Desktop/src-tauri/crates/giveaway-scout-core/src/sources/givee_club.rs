@@ -18,6 +18,7 @@ pub fn parse_givee_club(html: &str) -> Result<Vec<GiveawayItem>, SourceParseErro
     let details_selector = selector(".event-type-label");
     let steam_selector = selector(".event-platform-steam");
     let epic_selector = selector(".event-platform-epicgames");
+    let gog_selector = selector(".event-platform-gog");
     let base_url = Url::parse(GIVEE_CLUB_FEED_URL).expect("Givee Club feed URL is valid");
     let mut items = Vec::new();
 
@@ -52,6 +53,8 @@ pub fn parse_givee_club(html: &str) -> Result<Vec<GiveawayItem>, SourceParseErro
                 GameStore::EpicGames
             } else if card.select(&steam_selector).next().is_some() {
                 GameStore::Steam
+            } else if card.select(&gog_selector).next().is_some() {
+                GameStore::Gog
             } else {
                 GameStore::Unknown
             },

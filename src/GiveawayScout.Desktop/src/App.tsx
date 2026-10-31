@@ -481,7 +481,10 @@ function App() {
                   <span className="history-item-main">
                     <strong>{notification.title}</strong>
                     <small>
-                      {sourceName(notification.source)} · {t(`kind.${notification.kind}`)}
+                      {notification.store === "steam" ? "Steam"
+                        : notification.store === "epicGames" ? "Epic Games"
+                        : notification.store === "gog" ? "GOG"
+                        : t("unknownPlatform")} · {sourceName(notification.source)} · {t(`kind.${notification.kind}`)}
                     </small>
                   </span>
                   <time dateTime={notification.receivedAtUtc}>
@@ -735,6 +738,20 @@ function App() {
                   <span>
                     <strong>{t("epicGamesNotifications")}</strong>
                     <small>{t("storeNotificationsDescription", { store: "Epic Games" })}</small>
+                  </span>
+                </label>
+                <label className="check-setting check-setting-details">
+                  <input
+                    checked={settingsDraft.gogNotificationsEnabled}
+                    onChange={(event) => setSettingsDraft({
+                      ...settingsDraft,
+                      gogNotificationsEnabled: event.target.checked,
+                    })}
+                    type="checkbox"
+                  />
+                  <span>
+                    <strong>{t("gogNotifications")}</strong>
+                    <small>{t("storeNotificationsDescription", { store: "GOG" })}</small>
                   </span>
                 </label>
                 <small className="setting-hint">{t("storeFiltersHint")}</small>

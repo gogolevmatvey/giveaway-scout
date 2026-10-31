@@ -129,6 +129,8 @@ const resources = {
       notifications: "Уведомления",
       steamNotifications: "Раздачи и розыгрыши для Steam",
       epicGamesNotifications: "Раздачи и розыгрыши для Epic Games",
+      gogNotifications: "Раздачи и розыгрыши для GOG",
+      unknownPlatform: "Платформа не определена",
       storeNotificationsDescription: "Получать уведомления о публикациях для {{store}} из включённых источников.",
       storeFiltersHint:
         "Отключённые публикации сохраняются как известные, но не добавляются в историю и не вызывают уведомлений. После включения старые пропущенные публикации не рассылаются. Другие и нераспознанные магазины не фильтруются. Уже сохранённая история остаётся.",
@@ -290,6 +292,8 @@ const resources = {
       notifications: "Notifications",
       steamNotifications: "Steam giveaways and raffles",
       epicGamesNotifications: "Epic Games giveaways and raffles",
+      gogNotifications: "GOG giveaways and raffles",
+      unknownPlatform: "Unknown platform",
       storeNotificationsDescription: "Receive notifications about {{store}} publications from enabled sources.",
       storeFiltersHint:
         "Disabled publications are tracked as known but do not create history entries or notifications. Re-enabling a store does not send previously skipped publications. Other and unidentified stores are not filtered. Existing history is kept.",

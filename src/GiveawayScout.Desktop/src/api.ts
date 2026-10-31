@@ -47,6 +47,7 @@ export interface AppSettings {
   zerosEnabled: boolean;
   steamNotificationsEnabled: boolean;
   epicGamesNotificationsEnabled: boolean;
+  gogNotificationsEnabled: boolean;
   notificationSoundEnabled: boolean;
   startAtLogin: boolean;
   startInTray: boolean;
@@ -95,7 +96,7 @@ export interface GiveawayItem {
   title: string;
   url: string;
   kind: "giveaway" | "raffle";
-  store: "steam" | "epicGames" | "unknown";
+  store: "steam" | "epicGames" | "gog" | "unknown";
   details: string | null;
 }
 
@@ -116,6 +117,7 @@ export interface MonitoringOutcome {
 }
 
 export interface NotificationRecord {
+  store: GiveawayItem["store"];
   id: string;
   trackingKey: string | null;
   source: string;

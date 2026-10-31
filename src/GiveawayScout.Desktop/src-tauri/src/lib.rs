@@ -672,10 +672,20 @@ fn notification_request(
         )
     };
 
+    let (platform_label, unknown_platform) = if language == "ru" {
+        ("Платформа", "не определена")
+    } else {
+        ("Platform", "unknown")
+    };
+    let platform = notification
+        .store
+        .display_name()
+        .unwrap_or(unknown_platform);
+
     NotificationRequest {
         title: format!("{prefix}: {}", notification.title),
         body: format!(
-            "{source_label}: {source}\n{link_label}: {}",
+            "{platform_label}: {platform}\n{source_label}: {source}\n{link_label}: {}",
             notification.url
         ),
         action_label: action_label.to_owned(),
@@ -1146,6 +1156,57 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use giveaway_scout_core::{GiveawaySource, MonitoringOutcome, SourceFailure};
+
+    #[test]
+    fn giveaway_notifications_show_platform_for_both_languages_and_kinds() {
+        use giveaway_scout_core::{
+            Database, GameStore, GiveawayItem, GiveawayKind, InitialSyncMode,
+        };
+        for (store, name) in [
+            (GameStore::Steam, "Steam"),
+            (GameStore::EpicGames, "Epic Games"),
+            (GameStore::Gog, "GOG"),
+            (GameStore::Unknown, ""),
+        ] {
+            for kind in [GiveawayKind::Giveaway, GiveawayKind::Raffle] {
+                let mut database = Database::open_in_memory().unwrap();
+                let mut settings = database.settings().unwrap();
+                settings.initial_sync_mode = Some(InitialSyncMode::NotifyCurrent);
+                database.update_settings(&settings).unwrap();
+                database
+                    .process_discovered_items(
+                        &[GiveawayItem {
+                            source: GiveawaySource::GiveeClub,
+                            source_id: "test".to_owned(),
+                            title: "Example game".to_owned(),
+                            url: "https://givee.club/event/test".to_owned(),
+                            kind,
+                            store,
+                            details: None,
+                        }],
+                        &GiveawaySource::ALL,
+                    )
+                    .unwrap();
+                let record = database.notifications().unwrap().remove(0);
+                for (language, label, unknown) in [
+                    ("ru", "Платформа", "не определена"),
+                    ("en", "Platform", "unknown"),
+                ] {
+                    let request = super::notification_request(&record, language, false);
+                    let platform = if store == GameStore::Unknown {
+                        unknown
+                    } else {
+                        name
+                    };
+                    assert!(request.body.starts_with(&format!("{label}: {platform}\n")));
+                    assert!(request.body.contains("Givee Club"));
+                    assert!(request.body.contains(&record.url));
+                    assert!(request.title.contains("Example game"));
+                    assert!(!request.play_sound);
+                }
+            }
+        }
+    }
 
     #[test]
     fn a_bundled_development_profile_keeps_autostart_disabled_without_a_dev_server() {

@@ -290,40 +290,57 @@ fn failed_attempt_remains_pending_and_retries_the_same_uuid_only_when_enabled() 
 
 #[test]
 fn queue_and_single_record_eligibility_agree_for_every_source_and_store_filter_combination() {
-    let database = database_with_pending();
+    let mut database = database_with_pending();
+    let gog_items: Vec<_> = items()
+        .into_iter()
+        .filter(|item| item.store == GameStore::Unknown)
+        .map(|mut item| {
+            item.store = GameStore::Gog;
+            item.source_id = "test/gog".to_owned();
+            item
+        })
+        .collect();
+    database
+        .process_discovered_items(&gog_items, &GiveawaySource::ALL)
+        .unwrap();
     let history = database.notifications().unwrap();
     for givee in [false, true] {
         for games in [false, true] {
             for steam in [false, true] {
                 for epic in [false, true] {
-                    let mut settings = database.settings().unwrap();
-                    settings.givee_club_enabled = givee;
-                    settings.games_for_farm_enabled = games;
-                    settings.steam_notifications_enabled = steam;
-                    settings.epic_games_notifications_enabled = epic;
-                    database.update_settings(&settings).unwrap();
-                    let expected: HashSet<_> = items()
-                        .into_iter()
-                        .filter(|item| {
-                            settings.allows_source(item.source) && settings.allows_store(item.store)
-                        })
-                        .map(|item| item.tracking_key())
-                        .collect();
-                    let queued: HashSet<_> = database
-                        .pending_notifications()
-                        .unwrap()
-                        .into_iter()
-                        .map(|r| r.tracking_key.unwrap())
-                        .collect();
-                    assert_eq!(queued, expected);
-                    for record in &history {
-                        assert_eq!(
-                            database
-                                .notification_for_delivery(&record.id)
-                                .unwrap()
-                                .is_some(),
-                            expected.contains(record.tracking_key.as_ref().unwrap())
-                        );
+                    for gog in [false, true] {
+                        let mut settings = database.settings().unwrap();
+                        settings.givee_club_enabled = givee;
+                        settings.games_for_farm_enabled = games;
+                        settings.steam_notifications_enabled = steam;
+                        settings.epic_games_notifications_enabled = epic;
+                        settings.gog_notifications_enabled = gog;
+                        database.update_settings(&settings).unwrap();
+                        let expected: HashSet<_> = items()
+                            .into_iter()
+                            .chain(gog_items.iter().cloned())
+                            .filter(|item| {
+                                settings.allows_source(item.source)
+                                    && settings.allows_store(item.store)
+                            })
+                            .map(|item| item.tracking_key())
+                            .collect();
+                        let queued: HashSet<_> = database
+                            .pending_notifications()
+                            .unwrap()
+                            .into_iter()
+                            .map(|r| r.tracking_key.unwrap())
+                            .collect();
+                        assert_eq!(queued, expected);
+                        for record in &history {
+                            assert_eq!(
+                                database
+                                    .notification_for_delivery(&record.id)
+                                    .unwrap()
+                                    .is_some(),
+                                expected.contains(record.tracking_key.as_ref().unwrap())
+                            );
+                        }
                     }
                 }
             }

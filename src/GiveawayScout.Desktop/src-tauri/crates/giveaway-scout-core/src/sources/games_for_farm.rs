@@ -76,6 +76,7 @@ fn parse_cards(
                 .find_map(
                     |platform| match platform.trim().to_ascii_lowercase().as_str() {
                         "steam" => Some(GameStore::Steam),
+                        "gog" | "gog.com" => Some(GameStore::Gog),
                         "epic" | "epicgames" | "epic games" | "epic games store" => {
                             Some(GameStore::EpicGames)
                         }

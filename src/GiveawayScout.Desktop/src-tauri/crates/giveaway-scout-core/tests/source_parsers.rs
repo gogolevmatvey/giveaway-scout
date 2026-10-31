@@ -20,12 +20,20 @@ fn givee_store_uses_platform_marker_instead_of_title_or_steam_tasks() {
           <i class="event-platform event-platform-gog"></i>
           <i class="event-requirement-steam"></i>
         </a>
+        <a class="event-card" href="/event/4">
+          <span class="event-title">GOG in a title without a platform marker</span>
+        </a>
     "#,
     )
     .unwrap();
     assert_eq!(
         items.iter().map(|item| item.store).collect::<Vec<_>>(),
-        [GameStore::EpicGames, GameStore::Steam, GameStore::Unknown]
+        [
+            GameStore::EpicGames,
+            GameStore::Steam,
+            GameStore::Gog,
+            GameStore::Unknown
+        ]
     );
 }
 
@@ -45,10 +53,24 @@ fn games_for_farm_store_uses_platform_icons_instead_of_artwork_or_title() {
           <a class="card-content__title" href="/game?n=3">Steam in a title</a>
           <img alt="steam">
         </div>
+        <div class="razdachi__card">
+          <a class="card-content__title" href="/game?n=4">Steam in a GOG game title</a>
+          <div class="card-content__platforms"><img alt="vk"><img alt=" GOG "></div>
+        </div>
+        <div class="rozygryshi__card">
+          <a class="card-content__title" href="/game?n=5">Another game</a>
+          <div class="card-content__platforms"><img alt="gog.com"></div>
+        </div>
     "#).unwrap();
     assert_eq!(
         items.iter().map(|item| item.store).collect::<Vec<_>>(),
-        [GameStore::Steam, GameStore::Unknown, GameStore::EpicGames]
+        [
+            GameStore::Steam,
+            GameStore::Unknown,
+            GameStore::Gog,
+            GameStore::EpicGames,
+            GameStore::Gog
+        ]
     );
 }
 

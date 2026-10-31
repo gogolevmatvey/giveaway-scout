@@ -18,8 +18,8 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
 use crate::models::{
-    AppSettings, DataCounts, DiscoveryResult, GiveawayItem, GiveawaySource, InitialSyncMode,
-    NotificationRecord,
+    AppSettings, DataCounts, DiscoveryResult, GameStore, GiveawayItem, GiveawaySource,
+    InitialSyncMode, NotificationRecord,
 };
 
 const TRACKING_INITIALIZED_KEY: &str = "tracking_initialized";
@@ -30,7 +30,7 @@ const FORCE_SILENT_BASELINE_KEY: &str = "force_silent_baseline";
 const ELIGIBLE_NOTIFICATION_SELECT: &str = r#"
 SELECT history.id, history.tracking_key, history.source, history.kind,
        history.title, history.url, history.received_at_utc, history.read_at_utc,
-       history.delivery_state, history.delivery_attempts, history.last_delivery_error
+       history.delivery_state, history.delivery_attempts, history.last_delivery_error, history.store
 FROM notification_history AS history CROSS JOIN settings AS prefs
 WHERE prefs.id = 1 AND history.delivery_state != 'delivered'
     AND history.read_at_utc IS NULL
@@ -39,6 +39,7 @@ WHERE prefs.id = 1 AND history.delivery_state != 'delivered'
         OR (history.source = 'zeros' AND prefs.zeros_enabled))
     AND (history.store != 'steam' OR prefs.steam_notifications_enabled)
     AND (history.store != 'epicGames' OR prefs.epic_games_notifications_enabled)
+    AND (history.store != 'gog' OR prefs.gog_notifications_enabled)
 "#;
 
 const SCHEMA: &str = r#"
@@ -64,6 +65,7 @@ CREATE TABLE IF NOT EXISTS settings (
     zeros_enabled INTEGER NOT NULL DEFAULT 0 CHECK (zeros_enabled IN (0, 1)),
     steam_notifications_enabled INTEGER NOT NULL DEFAULT 1 CHECK (steam_notifications_enabled IN (0, 1)),
     epic_games_notifications_enabled INTEGER NOT NULL DEFAULT 1 CHECK (epic_games_notifications_enabled IN (0, 1)),
+    gog_notifications_enabled INTEGER NOT NULL DEFAULT 1 CHECK (gog_notifications_enabled IN (0, 1)),
     notification_sound_enabled INTEGER NOT NULL CHECK (notification_sound_enabled IN (0, 1)),
     start_at_login INTEGER NOT NULL CHECK (start_at_login IN (0, 1)),
     start_in_tray INTEGER NOT NULL DEFAULT 0 CHECK (start_in_tray IN (0, 1)),
@@ -235,6 +237,7 @@ impl Database {
         let add_initial_sync_mode = !self.settings_column_exists("initial_sync_mode")?;
         let add_steam = !self.settings_column_exists("steam_notifications_enabled")?;
         let add_epic = !self.settings_column_exists("epic_games_notifications_enabled")?;
+        let add_gog = !self.settings_column_exists("gog_notifications_enabled")?;
         let add_zeros = !self.settings_column_exists("zeros_enabled")?;
         let add_start_in_tray = !self.settings_column_exists("start_in_tray")?;
         let add_notification_store = !self.connection.query_row(
@@ -294,6 +297,11 @@ impl Database {
                 "ALTER TABLE settings ADD COLUMN epic_games_notifications_enabled INTEGER NOT NULL DEFAULT 1 CHECK (epic_games_notifications_enabled IN (0, 1))", [],
             )?;
         }
+        if add_gog {
+            transaction.execute(
+                "ALTER TABLE settings ADD COLUMN gog_notifications_enabled INTEGER NOT NULL DEFAULT 1 CHECK (gog_notifications_enabled IN (0, 1))", [],
+            )?;
+        }
         if add_notification_store {
             transaction.execute(
                 "ALTER TABLE notification_history ADD COLUMN store TEXT NOT NULL DEFAULT 'unknown'",
@@ -334,6 +342,10 @@ impl Database {
         )?;
         transaction.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at_utc) VALUES (8, ?1)",
+            [now_utc()?],
+        )?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at_utc) VALUES (9, ?1)",
             [now_utc()?],
         )?;
         transaction.commit()?;
@@ -388,7 +400,7 @@ impl Database {
                     notification_sound_enabled, start_at_login, keep_running_in_tray, language_code,
                     verbose_logging, http_timeout_seconds, http_retry_count, initial_sync_mode,
                     steam_notifications_enabled, epic_games_notifications_enabled, zeros_enabled,
-                    start_in_tray
+                    start_in_tray, gog_notifications_enabled
                 FROM settings WHERE id = 1"#,
                 [],
                 |row| {
@@ -404,6 +416,7 @@ impl Database {
                         zeros_enabled: row.get(13)?,
                         steam_notifications_enabled: row.get(11)?,
                         epic_games_notifications_enabled: row.get(12)?,
+                        gog_notifications_enabled: row.get(15)?,
                         notification_sound_enabled: row.get(3)?,
                         start_at_login: row.get(4)?,
                         start_in_tray: row.get(14)?,
@@ -460,7 +473,8 @@ impl Database {
                 steam_notifications_enabled = ?13,
                 epic_games_notifications_enabled = ?14,
                 zeros_enabled = ?15,
-                start_in_tray = ?16
+                start_in_tray = ?16,
+                gog_notifications_enabled = ?17
             WHERE id = 1"#,
             params![
                 settings.check_interval_minutes,
@@ -481,6 +495,7 @@ impl Database {
                 settings.epic_games_notifications_enabled,
                 settings.zeros_enabled,
                 settings.start_in_tray,
+                settings.gog_notifications_enabled,
             ],
         )?;
         Ok(())
@@ -690,7 +705,7 @@ impl Database {
         self.connection
             .query_row(
                 r#"SELECT id, tracking_key, source, kind, title, url, received_at_utc,
-                    read_at_utc, delivery_state, delivery_attempts, last_delivery_error
+                    read_at_utc, delivery_state, delivery_attempts, last_delivery_error, store
                 FROM notification_history WHERE id = ?1"#,
                 [id],
                 notification_from_row,
@@ -702,7 +717,7 @@ impl Database {
     pub fn notifications(&self) -> Result<Vec<NotificationRecord>, StorageError> {
         let mut statement = self.connection.prepare(
             r#"SELECT id, tracking_key, source, kind, title, url, received_at_utc,
-                read_at_utc, delivery_state, delivery_attempts, last_delivery_error
+                read_at_utc, delivery_state, delivery_attempts, last_delivery_error, store
             FROM notification_history
             ORDER BY received_at_utc DESC, id DESC"#,
         )?;
@@ -885,6 +900,7 @@ fn database_sidecar_path(path: &Path, suffix: &str) -> PathBuf {
 
 fn notification_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<NotificationRecord> {
     Ok(NotificationRecord {
+        store: GameStore::from_storage_name(&row.get::<_, String>(11)?),
         id: row.get(0)?,
         tracking_key: row.get(1)?,
         source: row.get(2)?,

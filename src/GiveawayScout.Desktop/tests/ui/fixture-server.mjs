@@ -8,10 +8,10 @@ const root = fileURLToPath(new URL('../../dist/', import.meta.url));
 const bridge = `
 const settings = {checkIntervalMinutes:60,httpTimeoutSeconds:30,httpRetryCount:2,
 giveeClubEnabled:true,gamesForFarmEnabled:true,zerosEnabled:false,steamNotificationsEnabled:true,
-epicGamesNotificationsEnabled:true,notificationSoundEnabled:true,startAtLogin:false,
+epicGamesNotificationsEnabled:true, gogNotificationsEnabled: true,notificationSoundEnabled:true,startAtLogin:false,
 startInTray:false,keepRunningInTray:false,languageCode:'en',verboseLogging:false,initialSyncMode:'silent'};
 const monitor={isChecking:false,lastStartedAtUtc:null,lastCompletedAtUtc:null,lastSuccessfulCheckUtc:null,lastError:null,lastNewItems:0,lastFailureCount:0,sourceFailures:[]};
-const history = new URLSearchParams(location.search).has('history') ? Array.from({length:40},(_,i)=>({id:String(i),source:'giveeClub',kind:'giveaway',title:'Fixture game '+i,url:'https://givee.club/event/'+i,receivedAtUtc:'2026-10-25T08:00:00Z',readAtUtc:null})) : [];
+const history = new URLSearchParams(location.search).has('history') ? Array.from({length:40},(_,i)=>({id:String(i),source:'giveeClub',store:['steam','epicGames','gog','unknown'][i%4],kind:'giveaway',title:'Fixture game '+i,url:'https://givee.club/event/'+i,receivedAtUtc:'2026-10-25T08:00:00Z',readAtUtc:null})) : [];
 window.__uiTest = {calls:[],unexpected:[],monitor,failSettingsWrites:0};
 window.__TAURI_INTERNALS__ = {transformCallback:()=>1,unregisterCallback:()=>{},invoke:async(command,args)=>{
   window.__uiTest.calls.push({command,args});

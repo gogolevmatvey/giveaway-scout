@@ -294,3 +294,46 @@ test('action buttons have spacing, pointer cursors and visible hover feedback', 
   await secondary.moveTo();
   await browser.waitUntil(async () => await browser.execute(() => getComputedStyle(document.querySelector('.source-actions .secondary-button')).backgroundColor) !== layout.secondColor);
 });
+
+
+test('GOG filter can be saved, reopened and re-enabled in both languages',async()=>{
+  await browser.$('.header-button').click();
+  const gog=()=>browser.$('[role="dialog"]').$('label*=GOG giveaways').$('input');
+  assert.equal(await gog().isSelected(),true);
+  await gog().click();
+  assert.equal(await browser.$('.settings-draft-status').getText(),'You have unsaved changes');
+  await browser.$('.dialog-actions .primary-button').click();
+  await browser.$('[role="dialog"]').waitForExist({reverse:true});
+  let writes=await browser.execute(()=>window.__uiTest.calls.filter(call=>call.command==='update_settings'));
+  assert.equal(writes.at(-1).args.settings.gogNotificationsEnabled,false);
+  assert.equal(writes.at(-1).args.settings.steamNotificationsEnabled,true);
+  assert.equal(writes.at(-1).args.settings.epicGamesNotificationsEnabled,true);
+  await browser.$('.header-button').click();
+  assert.equal(await gog().isSelected(),false);
+  await browser.$('button=Русский').click();
+  await browser.$('.dialog-actions .primary-button').click();
+  await browser.$('[role="dialog"]').waitForExist({reverse:true});
+  await browser.$('.header-button').click();
+  const russianGog=await browser.$('[role="dialog"]').$('label*=Раздачи и розыгрыши для GOG').$('input');
+  assert.equal(await russianGog.isSelected(),false);
+  await russianGog.click();
+  await browser.$('.dialog-actions .primary-button').click();
+  await browser.$('[role="dialog"]').waitForExist({reverse:true});
+  writes=await browser.execute(()=>window.__uiTest.calls.filter(call=>call.command==='update_settings'));
+  assert.equal(writes.at(-1).args.settings.gogNotificationsEnabled,true);
+});
+
+test('notification history shows Steam, Epic Games, GOG and an explicit unknown platform',async()=>{
+  await browser.url(server.url+'?history');
+  await browser.$('.history-item:first-child').waitForDisplayed();
+  const rows=await browser.$$('.history-item small');
+  for(const [index,name] of ['Steam','Epic Games','GOG','Unknown platform'].entries()) {
+    assert.equal(await rows[index].getText(),name+' · Givee Club · Giveaway');
+  }
+  await browser.$('.header-button').click();
+  await browser.$('button=Русский').click();
+  await browser.$('.dialog-actions .primary-button').click();
+  await browser.$('[role="dialog"]').waitForExist({reverse:true});
+  assert.match(await browser.$('.history-item:nth-child(3) small').getText(),/^GOG ·/);
+  assert.match(await browser.$('.history-item:nth-child(4) small').getText(),/^Платформа не определена ·/);
+});

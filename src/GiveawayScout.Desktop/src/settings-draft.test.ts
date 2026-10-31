@@ -5,7 +5,7 @@ import { settingsHaveChanges } from "./settings-draft";
 const baseline: AppSettings = {
   checkIntervalMinutes: 60, httpTimeoutSeconds: 30, httpRetryCount: 2,
   giveeClubEnabled: true, gamesForFarmEnabled: true, zerosEnabled: false,
-  steamNotificationsEnabled: true, epicGamesNotificationsEnabled: true,
+  steamNotificationsEnabled: true, epicGamesNotificationsEnabled: true, gogNotificationsEnabled: true,
   notificationSoundEnabled: true, startAtLogin: false, startInTray: true, keepRunningInTray: false,
   languageCode: "en", verboseLogging: false, initialSyncMode: "silent",
 };
@@ -25,7 +25,7 @@ it.each(["interval", "timeout", "retries"] as const)("detects edited and invalid
 
 it.each([
   "giveeClubEnabled", "gamesForFarmEnabled", "zerosEnabled", "steamNotificationsEnabled",
-  "epicGamesNotificationsEnabled", "notificationSoundEnabled", "startAtLogin",
+  "epicGamesNotificationsEnabled", "gogNotificationsEnabled", "notificationSoundEnabled", "startAtLogin",
   "keepRunningInTray", "startInTray", "verboseLogging",
 ] as const)("detects and reverses changes to %s", key => {
   const draft = {...baseline, [key]: !baseline[key]};

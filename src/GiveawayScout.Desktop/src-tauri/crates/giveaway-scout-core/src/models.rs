@@ -40,15 +40,35 @@ pub enum GiveawayKind {
 pub enum GameStore {
     Steam,
     EpicGames,
+    Gog,
     #[default]
     Unknown,
 }
 
 impl GameStore {
+    pub fn from_storage_name(value: &str) -> Self {
+        match value {
+            "steam" => Self::Steam,
+            "epicGames" => Self::EpicGames,
+            "gog" => Self::Gog,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub const fn display_name(self) -> Option<&'static str> {
+        match self {
+            Self::Steam => Some("Steam"),
+            Self::EpicGames => Some("Epic Games"),
+            Self::Gog => Some("GOG"),
+            Self::Unknown => None,
+        }
+    }
+
     pub const fn storage_name(self) -> &'static str {
         match self {
             Self::Steam => "steam",
             Self::EpicGames => "epicGames",
+            Self::Gog => "gog",
             Self::Unknown => "unknown",
         }
     }
@@ -128,6 +148,8 @@ pub struct AppSettings {
     pub steam_notifications_enabled: bool,
     #[serde(default = "enabled_by_default")]
     pub epic_games_notifications_enabled: bool,
+    #[serde(default = "enabled_by_default")]
+    pub gog_notifications_enabled: bool,
     pub notification_sound_enabled: bool,
     pub start_at_login: bool,
     /// Applies only to OS autostart; ordinary launches still open the window.
@@ -156,6 +178,7 @@ impl AppSettings {
         match store {
             GameStore::Steam => self.steam_notifications_enabled,
             GameStore::EpicGames => self.epic_games_notifications_enabled,
+            GameStore::Gog => self.gog_notifications_enabled,
             GameStore::Unknown => true,
         }
     }
@@ -172,6 +195,7 @@ impl Default for AppSettings {
             zeros_enabled: false,
             steam_notifications_enabled: true,
             epic_games_notifications_enabled: true,
+            gog_notifications_enabled: true,
             notification_sound_enabled: true,
             start_at_login: false,
             start_in_tray: false,
@@ -194,6 +218,8 @@ pub struct DataCounts {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NotificationRecord {
+    #[serde(default)]
+    pub store: GameStore,
     pub id: String,
     pub tracking_key: Option<String>,
     pub source: String,
