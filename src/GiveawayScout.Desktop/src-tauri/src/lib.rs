@@ -2,12 +2,13 @@
 compile_error!("ui-tests must never be included in Release");
 #[cfg(all(feature = "ui-tests", not(target_os = "windows")))]
 compile_error!("the native UI test harness currently supports Windows only");
-#[cfg(any(target_os = "linux", test))]
 mod attention;
+mod coordinator;
 #[cfg(target_os = "linux")]
 mod linux_activation;
 #[cfg(target_os = "linux")]
 mod linux_notifications;
+mod logging;
 #[cfg(target_os = "macos")]
 mod macos_notifications;
 #[cfg(not(feature = "ui-tests"))]
@@ -16,6 +17,7 @@ mod notifications;
 #[path = "ui_test_notifications.rs"]
 mod notifications;
 mod operations;
+mod redirect_pipeline;
 #[cfg(feature = "ui-tests")]
 mod ui_tests;
 mod updates;
@@ -23,45 +25,45 @@ mod usage_statistics;
 #[cfg(target_os = "windows")]
 mod windows_installation;
 
-use std::{sync::Mutex, time::Duration};
+use std::sync::{Arc, Mutex};
 
-#[cfg(not(feature = "ui-tests"))]
-use giveaway_scout_core::HttpPageFetcher;
+use giveaway_scout_core::models::NotificationHistoryPage;
 use giveaway_scout_core::{
-    AppSettings, AppState, DataCounts, Database, DatabaseRecoveryReport, GiveawaySource,
-    MonitoringOutcome, NotificationRecord, SourceFailure, apply_source_check, check_sources,
-    dispatch_pending_notifications,
+    AppSettings, AppState, DataCounts, Database, DatabaseRecoveryReport, NotificationRecord,
+    SourceFailure, SourcePhase, SourceStatus,
+};
+use giveaway_scout_platform::ProfileGuard;
+#[cfg(test)]
+use giveaway_scout_runtime::check_result_diagnostics;
+use giveaway_scout_runtime::{
+    RunMode, Runtime, RuntimeEvent, SharedDatabase, source_failure_description,
 };
 use serde::Serialize;
-#[cfg(not(feature = "ui-tests"))]
 use tauri::UserAttentionType;
 use tauri::{
     AppHandle, Emitter, Manager, WindowEvent, Wry,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
+#[cfg(not(target_os = "windows"))]
 use tauri_plugin_autostart::ManagerExt as AutostartManagerExt;
 use tauri_plugin_deep_link::DeepLinkExt;
-#[cfg(not(feature = "ui-tests"))]
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
-use tokio::sync::Notify;
-#[cfg(feature = "ui-tests")]
-use ui_tests::UiPageFetcher as HttpPageFetcher;
 
+use crate::coordinator::CheckStartResult;
 use crate::notifications::NotificationRequest;
 use crate::operations::DataOperationGate;
 
 struct StorageState {
-    database: Mutex<Database>,
+    database: SharedDatabase,
     database_recovery: Option<DatabaseRecoveryReport>,
+    _profile_guard: Arc<ProfileGuard>,
 }
 
 struct MonitorState {
-    fetcher: Mutex<HttpPageFetcher>,
-    data_operation: DataOperationGate,
-    status: Mutex<MonitorSnapshot>,
-    schedule_changed: Notify,
+    runtime: Arc<Runtime>,
+    data_operation: Arc<DataOperationGate>,
 }
 
 struct TrayMenuState {
@@ -92,6 +94,36 @@ const TRAY_QUIT_ID: &str = "tray-quit";
 const AUTOSTART_ARGUMENT: &str = "--autostart";
 const DEEP_LINK_SCHEME: &str = "giveaway-scout";
 
+#[cfg(all(target_os = "windows", not(feature = "ui-tests")))]
+fn show_profile_open_error(error: &giveaway_scout_platform::PlatformError) {
+    use windows::{
+        Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW},
+        core::{PCWSTR, w},
+    };
+    let russian =
+        sys_locale::get_locale().is_some_and(|locale| locale.to_lowercase().starts_with("ru"));
+    let message = if error.is_profile_busy() {
+        if russian {
+            "Профиль Giveaway Scout уже используется. Завершите работу CLI через Ctrl+C или закройте другую копию приложения и повторите запуск.".to_owned()
+        } else {
+            "The Giveaway Scout profile is already in use. Stop the CLI with Ctrl+C or quit the other application before starting again.".to_owned()
+        }
+    } else {
+        error.to_string()
+    };
+    let message: Vec<u16> = message.encode_utf16().chain(Some(0)).collect();
+    // A native startup error is visible even though the release GUI has no
+    // console. Unlike Tauri's blocking dialog, this is safe before its loop.
+    unsafe {
+        let _ = MessageBoxW(
+            None,
+            PCWSTR(message.as_ptr()),
+            w!("Giveaway Scout"),
+            MB_OK | MB_ICONERROR,
+        );
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DeepLinkAction {
     Show,
@@ -120,85 +152,48 @@ struct MonitorSnapshot {
     source_failures: Vec<SourceFailure>,
     last_new_items: u64,
     last_failure_count: u64,
+    source_states: Vec<SourceStatus>,
 }
 
 impl MonitorSnapshot {
-    fn record_started(&mut self, timestamp: String) {
-        self.is_checking = true;
-        self.last_started_at_utc = Some(timestamp);
-        self.last_error = None;
-        self.source_failures.clear();
-    }
-
-    fn record_finished(&mut self, timestamp: String, result: &Result<MonitoringOutcome, String>) {
-        self.is_checking = false;
-        self.last_completed_at_utc = Some(timestamp.clone());
-
-        match result {
-            Ok(outcome) => {
-                self.last_new_items = outcome.new_items.len() as u64;
-                self.last_failure_count = outcome.failures.len() as u64;
-                self.source_failures = outcome.failures.clone();
-                if outcome.check_performed && outcome.failures.is_empty() {
-                    self.last_successful_check_utc = Some(timestamp);
-                    self.last_error = None;
-                } else if !outcome.failures.is_empty() {
-                    self.last_error = Some(
-                        outcome
-                            .failures
-                            .iter()
-                            .map(source_failure_description)
-                            .collect::<Vec<_>>()
-                            .join("; "),
-                    );
-                }
-            }
-            Err(error) => {
-                self.last_error = Some(error.clone());
-                self.last_new_items = 0;
-                self.last_failure_count = 0;
-                self.source_failures.clear();
-            }
-        }
-    }
-}
-
-fn source_failure_description(failure: &SourceFailure) -> String {
-    let source = match failure.source {
-        GiveawaySource::GiveeClub => "Givee Club",
-        GiveawaySource::GamesForFarm => "Games for Farm",
-        GiveawaySource::Zeros => "Zeros",
-    };
-    let message = failure.message.replace('\r', "\\r").replace('\n', "\\n");
-    format!("{source}: {message}")
-}
-
-fn check_result_diagnostics(
-    result: &Result<MonitoringOutcome, String>,
-) -> Vec<(log::Level, String)> {
-    match result {
-        Ok(outcome) => {
-            let mut messages: Vec<_> = outcome
-                .failures
+    fn from_sources(source_states: Vec<SourceStatus>) -> Self {
+        let active: Vec<_> = source_states
+            .iter()
+            .filter(|state| state.phase != SourcePhase::Disabled)
+            .collect();
+        let source_failures: Vec<_> = active
+            .iter()
+            .filter_map(|state| state.last_error.clone())
+            .collect();
+        let last_error = (!source_failures.is_empty()).then(|| {
+            source_failures
                 .iter()
-                .map(|failure| {
-                    (
-                        log::Level::Warn,
-                        format!(
-                            "giveaway source check failed: {}",
-                            source_failure_description(failure)
-                        ),
-                    )
-                })
-                .collect();
-            messages.push((log::Level::Info, format!(
-                "giveaway check finished: new_items={}, failures={}, initial_sync={}, baseline_deferred={}",
-                outcome.new_items.len(), outcome.failures.len(),
-                outcome.is_initial_synchronization, outcome.baseline_deferred,
-            )));
-            messages
+                .map(source_failure_description)
+                .collect::<Vec<_>>()
+                .join("; ")
+        });
+        Self {
+            is_checking: active
+                .iter()
+                .any(|state| state.phase == SourcePhase::Checking),
+            last_started_at_utc: active
+                .iter()
+                .filter_map(|state| state.last_started_at_utc.clone())
+                .max(),
+            last_completed_at_utc: active
+                .iter()
+                .filter_map(|state| state.last_completed_at_utc.clone())
+                .max(),
+            last_successful_check_utc: active
+                .iter()
+                .filter_map(|state| state.last_successful_check_utc.clone())
+                .max(),
+            last_new_items: active.iter().map(|state| state.last_new_items).sum(),
+            last_failure_count: source_failures.len() as u64,
+            last_error,
+            source_failures,
+            source_states,
         }
-        Err(error) => vec![(log::Level::Error, format!("giveaway check failed: {error}"))],
     }
 }
 
@@ -221,22 +216,24 @@ fn get_storage_snapshot(
         .database
         .lock()
         .map_err(|_| "database lock is unavailable".to_owned())?;
-    let monitor_snapshot = monitor
-        .status
-        .lock()
-        .map_err(|_| "monitor status lock is unavailable".to_owned())?
-        .clone();
-
+    // Copy storage fields before acquiring runtime state: source completions
+    // acquire the coordinator first and then the database.
+    let settings = database.settings().map_err(|error| error.to_string())?;
+    let counts = database.counts().map_err(|error| error.to_string())?;
+    let data_size_bytes = database
+        .data_size_bytes()
+        .map_err(|error| error.to_string())?;
+    let initial_sync_choice_required = database
+        .initial_sync_choice_required()
+        .map_err(|error| error.to_string())?;
+    drop(database);
+    let monitor_snapshot = MonitorSnapshot::from_sources(monitor.runtime.source_states()?);
     Ok(StorageSnapshot {
-        settings: database.settings().map_err(|error| error.to_string())?,
-        counts: database.counts().map_err(|error| error.to_string())?,
-        data_size_bytes: database
-            .data_size_bytes()
-            .map_err(|error| error.to_string())?,
+        settings,
+        counts,
+        data_size_bytes,
         database_recovery: storage.database_recovery.clone(),
-        initial_sync_choice_required: database
-            .initial_sync_choice_required()
-            .map_err(|error| error.to_string())?,
+        initial_sync_choice_required,
         monitor: monitor_snapshot,
     })
 }
@@ -248,9 +245,21 @@ fn update_settings(
     monitor: tauri::State<'_, MonitorState>,
     settings: AppSettings,
 ) -> Result<(), String> {
-    let updated_fetcher =
-        HttpPageFetcher::with_policy(settings.http_timeout_seconds, settings.http_retry_count)
-            .map_err(|error| error.to_string())?;
+    monitor.runtime.validate_settings(&settings)?;
+    #[cfg(target_os = "windows")]
+    {
+        let database = storage
+            .database
+            .lock()
+            .map_err(|_| "database lock is unavailable")?;
+        giveaway_scout_platform::update_settings(
+            &database,
+            &settings,
+            development_profile(&app.config().identifier, tauri::is_dev()),
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    #[cfg(not(target_os = "windows"))]
     let previous = {
         let database = storage
             .database
@@ -263,8 +272,9 @@ fn update_settings(
         previous
     };
 
+    #[cfg(not(target_os = "windows"))]
     if previous.start_at_login != settings.start_at_login
-        && let Err(error) = sync_autostart(&app, settings.start_at_login)
+        && let Err(error) = sync_autostart(&app, &settings)
     {
         if let Ok(database) = storage.database.lock()
             && let Err(rollback_error) = database.update_settings(&previous)
@@ -274,10 +284,7 @@ fn update_settings(
         return Err(error);
     }
 
-    *monitor
-        .fetcher
-        .lock()
-        .map_err(|_| "HTTP client lock is unavailable".to_owned())? = updated_fetcher;
+    monitor.runtime.reconfigure()?;
     apply_log_level(settings.verbose_logging);
     log::info!(
         "verbose logging {}",
@@ -288,33 +295,96 @@ fn update_settings(
         }
     );
     update_tray_labels(&app, effective_language(&settings));
-    monitor.schedule_changed.notify_one();
+    emit_monitor_changed(&app);
     Ok(())
 }
 
 #[tauri::command]
-fn clear_giveaway_data(
-    app: AppHandle,
+fn get_logging_state(
     storage: tauri::State<'_, StorageState>,
-    monitor: tauri::State<'_, MonitorState>,
-) -> Result<(), String> {
-    let _guard = monitor
-        .data_operation
-        .try_acquire()
-        .ok_or_else(|| "data operation is already running".to_owned())?;
-    let mut database = storage
+    logging: tauri::State<'_, logging::LoggingState>,
+) -> Result<logging::LoggingSnapshot, String> {
+    let settings = storage
         .database
         .lock()
-        .map_err(|_| "database lock is unavailable".to_owned())?;
-    database
-        .clear_giveaway_data()
+        .map_err(|_| "database lock is unavailable".to_owned())?
+        .settings()
         .map_err(|error| error.to_string())?;
-    log::info!("saved giveaways and notification history cleared; next baseline will be silent");
-    sync_attention(&app, &database)?;
-    emit_history_changed(&app);
-    Ok(())
+    Ok(logging.snapshot(&settings))
 }
 
+#[tauri::command]
+async fn choose_log_directory(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<Option<String>, String> {
+    // Copy state before opening the native dialog: neither database nor logger
+    // locks may remain held while the user chooses a folder.
+    let (language, directory) = {
+        let storage = app.state::<StorageState>();
+        let settings = storage
+            .database
+            .lock()
+            .map_err(|_| "database lock is unavailable".to_owned())?
+            .settings()
+            .map_err(|error| error.to_string())?;
+        let snapshot = app.state::<logging::LoggingState>().snapshot(&settings);
+        (effective_language(&settings), snapshot.effective_directory)
+    };
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .set_title(if language == "en" {
+            "Choose log folder"
+        } else {
+            "Выберите папку журналов"
+        });
+    if let Some(directory) = directory {
+        dialog = dialog.set_directory(directory);
+    }
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    dialog.pick_folder(move |path| {
+        let _ = sender.send(path);
+    });
+    receiver
+        .await
+        .map_err(|_| "folder dialog is unavailable".to_owned())?
+        .map(|path| {
+            path.into_path()
+                .map(|path| path.to_string_lossy().into_owned())
+                .map_err(|error| error.to_string())
+        })
+        .transpose()
+}
+
+#[tauri::command]
+fn open_log_directory(
+    app: AppHandle,
+    storage: tauri::State<'_, StorageState>,
+    logging: tauri::State<'_, logging::LoggingState>,
+) -> Result<(), String> {
+    let settings = storage
+        .database
+        .lock()
+        .map_err(|_| "database lock is unavailable".to_owned())?
+        .settings()
+        .map_err(|error| error.to_string())?;
+    let directory = logging
+        .snapshot(&settings)
+        .effective_directory
+        .ok_or_else(|| "file logging is unavailable".to_owned())?;
+    app.opener()
+        .open_path(directory, None::<&str>)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn clear_giveaway_data(monitor: tauri::State<'_, MonitorState>) -> Result<(), String> {
+    monitor.runtime.clear_giveaway_data()?;
+    log::info!("saved giveaways and notification history cleared; next baseline will be silent");
+    Ok(())
+}
 #[tauri::command]
 fn get_notification_history(
     storage: tauri::State<'_, StorageState>,
@@ -328,20 +398,70 @@ fn get_notification_history(
 }
 
 #[tauri::command]
+async fn get_notification_history_page(
+    storage: tauri::State<'_, StorageState>,
+    cursor: Option<String>,
+) -> Result<NotificationHistoryPage, String> {
+    let database = storage.database.clone();
+    // Paging may wait for a short write or read older rows. Keep both the DB
+    // lock and SQLite work off the native window's event thread.
+    tauri::async_runtime::spawn_blocking(move || {
+        database
+            .lock()
+            .map_err(|_| "database lock is unavailable".to_owned())?
+            .notification_history_page(cursor.as_deref())
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 fn mark_all_notifications_read(
     app: AppHandle,
     storage: tauri::State<'_, StorageState>,
 ) -> Result<u64, String> {
-    let database = storage
-        .database
-        .lock()
-        .map_err(|_| "database lock is unavailable".to_owned())?;
-    let changed = database
-        .mark_all_notifications_read()
-        .map_err(|error| error.to_string())?;
-    sync_attention(&app, &database)?;
+    let (changed, unread) = {
+        let database = storage
+            .database
+            .lock()
+            .map_err(|_| "database lock is unavailable".to_owned())?;
+        let changed = database
+            .mark_all_notifications_read()
+            .map_err(|error| error.to_string())?;
+        let unread = database
+            .counts()
+            .map_err(|error| error.to_string())?
+            .unread_notifications;
+        (changed, unread)
+    };
+    sync_attention(&app, unread, false)?;
     emit_history_changed(&app);
     Ok(changed)
+}
+
+#[tauri::command]
+fn mark_notification_read(
+    app: AppHandle,
+    storage: tauri::State<'_, StorageState>,
+    notification_id: String,
+) -> Result<(), String> {
+    let unread = {
+        let database = storage
+            .database
+            .lock()
+            .map_err(|_| "database lock is unavailable".to_owned())?;
+        database
+            .mark_notification_read(&notification_id)
+            .map_err(|error| error.to_string())?;
+        database
+            .counts()
+            .map_err(|error| error.to_string())?
+            .unread_notifications
+    };
+    sync_attention(&app, unread, false)?;
+    emit_history_changed(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -390,7 +510,18 @@ fn development_profile(identifier: &str, development_build: bool) -> bool {
     development_build || identifier.ends_with(".dev")
 }
 
-fn sync_autostart(app: &AppHandle, enabled: bool) -> Result<(), String> {
+#[cfg(target_os = "windows")]
+fn sync_autostart(app: &AppHandle, settings: &AppSettings) -> Result<(), String> {
+    giveaway_scout_platform::sync_autostart(
+        settings,
+        development_profile(&app.config().identifier, tauri::is_dev()),
+    )
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn sync_autostart(app: &AppHandle, settings: &AppSettings) -> Result<(), String> {
+    let enabled = settings.start_at_login;
     if development_profile(&app.config().identifier, tauri::is_dev()) {
         log::debug!("autostart synchronization skipped for the development build");
         return Ok(());
@@ -577,33 +708,40 @@ fn activate_notification(
     app.opener()
         .open_url(url.as_str(), None::<&str>)
         .map_err(|error| error.to_string())?;
-    let database = storage
-        .database
-        .lock()
-        .map_err(|_| "database lock is unavailable".to_owned())?;
-    database
-        .mark_notification_read(notification_id)
-        .map_err(|error| error.to_string())?;
-    sync_attention(app, &database)?;
+    let unread = {
+        let database = storage
+            .database
+            .lock()
+            .map_err(|_| "database lock is unavailable".to_owned())?;
+        database
+            .mark_notification_read(notification_id)
+            .map_err(|error| error.to_string())?;
+        database
+            .counts()
+            .map_err(|error| error.to_string())?
+            .unread_notifications
+    };
+    sync_attention(app, unread, false)?;
     emit_history_changed(app);
     Ok(())
 }
 
-#[cfg(feature = "ui-tests")]
-fn sync_attention(_app: &AppHandle, database: &Database) -> Result<(), String> {
-    let unread = database
+fn unread_notification_count(storage: &StorageState) -> Result<u64, String> {
+    storage
+        .database
+        .lock()
+        .map_err(|_| "database lock is unavailable".to_owned())?
         .counts()
-        .map_err(|e| e.to_string())?
-        .unread_notifications;
-    ui_tests::record(ui_tests::Event::Attention { unread })
+        .map(|counts| counts.unread_notifications)
+        .map_err(|error| error.to_string())
 }
 
-#[cfg(not(feature = "ui-tests"))]
-fn sync_attention(app: &AppHandle, database: &Database) -> Result<(), String> {
-    let unread = database
-        .counts()
-        .map_err(|error| error.to_string())?
-        .unread_notifications;
+// Window getters synchronously wait for the main thread. Accept only an owned
+// count so callers release the database before entering any GUI API: that thread
+// can itself be waiting for storage while serving a frontend command.
+fn sync_attention(app: &AppHandle, unread: u64, has_new: bool) -> Result<(), String> {
+    #[cfg(feature = "ui-tests")]
+    ui_tests::record(ui_tests::Event::Attention { unread })?;
     #[cfg(target_os = "linux")]
     if let Some(tray) = app.tray_by_id(TRAY_ID)
         && let Some(icon) = app.default_window_icon()
@@ -622,7 +760,16 @@ fn sync_attention(app: &AppHandle, database: &Database) -> Result<(), String> {
         }
     }
     if let Some(window) = app.get_webview_window("main") {
-        let attention = (unread > 0).then_some(UserAttentionType::Informational);
+        #[cfg(feature = "ui-tests")]
+        ui_tests::before_attention_window_query(app)?;
+        let focused = window.is_focused().map_err(|error| error.to_string())?;
+        #[cfg(feature = "ui-tests")]
+        ui_tests::after_attention_window_query(focused)?;
+        let attention = match attention::window_attention(has_new, unread, focused) {
+            attention::WindowAttention::Request => Some(UserAttentionType::Informational),
+            attention::WindowAttention::Clear => None,
+            attention::WindowAttention::Keep => return Ok(()),
+        };
         window
             .request_user_attention(attention)
             .map_err(|error| error.to_string())?;
@@ -641,12 +788,17 @@ fn notification_request(
     language: &str,
     play_sound: bool,
 ) -> NotificationRequest {
-    let source = match notification.source.as_str() {
+    let discovered_source = match notification.source.as_str() {
         "giveeClub" | "GiveeClub" => "Givee Club",
         "gamesForFarm" | "GamesForFarm" => "Games for Farm",
         "zeros" | "Zeros" => "Zeros",
+        "freeSteamKeys" | "FreeSteamKeys" => "FreeSteamKeys",
         value => value,
     };
+    let source = notification
+        .origin_name
+        .as_deref()
+        .unwrap_or(discovered_source);
     let is_raffle = notification.kind.eq_ignore_ascii_case("raffle");
     let (prefix, source_label, link_label, action_label) = if language == "ru" {
         (
@@ -711,48 +863,64 @@ fn test_notification_request(language: &str, play_sound: bool) -> NotificationRe
     }
 }
 
-fn deliver_pending_notifications(app: &AppHandle, storage: &StorageState) -> Result<u64, String> {
-    let report = dispatch_pending_notifications(&storage.database, |notification, settings| {
-        let language = effective_language(settings);
-        let request =
-            notification_request(notification, language, settings.notification_sound_enabled);
-        let notification_id = notification.id.clone();
-        let activation_id = notification_id.clone();
-        let activation_app = app.clone();
-        let activation_url = format!("{DEEP_LINK_SCHEME}://notification/{notification_id}");
-        notifications::show(app, &request, Some(&activation_url), move || {
-            let storage = activation_app.state::<StorageState>();
-            if let Err(error) =
-                activate_notification(&activation_app, storage.inner(), &activation_id)
-            {
-                log::warn!("could not activate notification {activation_id}: {error}");
-            }
-        })
+fn deliver_notification(
+    app: &AppHandle,
+    notification: &NotificationRecord,
+    settings: &AppSettings,
+) -> Result<(), String> {
+    let request = notification_request(
+        notification,
+        effective_language(settings),
+        settings.notification_sound_enabled,
+    );
+    let activation_id = notification.id.clone();
+    let activation_app = app.clone();
+    let activation_url = format!("{DEEP_LINK_SCHEME}://notification/{}", notification.id);
+    notifications::show(app, &request, Some(&activation_url), move || {
+        let storage = activation_app.state::<StorageState>();
+        if let Err(error) = activate_notification(&activation_app, storage.inner(), &activation_id)
+        {
+            log::warn!("could not activate notification {activation_id}: {error}");
+        }
     })
-    .map_err(|error| error.to_string())?;
+}
 
-    let database = storage
-        .database
-        .lock()
-        .map_err(|_| "database lock is unavailable".to_owned())?;
-    sync_attention(app, &database)?;
-    if report.attempted > 0 {
-        emit_history_changed(app);
+fn runtime_event(app: &AppHandle, event: RuntimeEvent) {
+    match event {
+        RuntimeEvent::HistoryChanged => {
+            if let Some(storage) = app.try_state::<StorageState>()
+                && let Err(error) = unread_notification_count(storage.inner())
+                    .and_then(|unread| sync_attention(app, unread, false))
+            {
+                log::warn!("could not refresh unread notification attention: {error}");
+            }
+            emit_history_changed(app);
+        }
+        RuntimeEvent::MonitorChanged => emit_monitor_changed(app),
+        RuntimeEvent::SourceCompleted(completed) => {
+            let has_new = completed
+                .outcome
+                .as_ref()
+                .is_ok_and(|outcome| !outcome.new_items.is_empty());
+            if has_new
+                && let Some(storage) = app.try_state::<StorageState>()
+                && let Err(error) = unread_notification_count(storage.inner())
+                    .and_then(|unread| sync_attention(app, unread, true))
+            {
+                log::warn!("could not request new notification attention: {error}");
+            }
+        }
     }
-    Ok(report.delivered)
 }
 
 fn spawn_check(app: &AppHandle) {
-    let app = app.clone();
+    let runtime = app.state::<MonitorState>().runtime.clone();
     tauri::async_runtime::spawn(async move {
-        let storage = app.state::<StorageState>();
-        let monitor = app.state::<MonitorState>();
-        if let Err(error) = perform_check(&app, storage.inner(), monitor.inner()).await {
-            log::warn!("tray giveaway check did not complete: {error}");
+        if let Err(error) = runtime.check_now().await {
+            log::warn!("tray giveaway check did not start: {error}");
         }
     });
 }
-
 fn create_tray(app: &tauri::App, language: &str) -> tauri::Result<TrayMenuState> {
     let labels = tray_labels(language);
     let open = MenuItem::with_id(app, TRAY_OPEN_ID, labels.open, true, None::<&str>)?;
@@ -802,134 +970,20 @@ fn create_tray(app: &tauri::App, language: &str) -> tauri::Result<TrayMenuState>
 }
 
 #[tauri::command]
-async fn check_now(
-    app: AppHandle,
-    storage: tauri::State<'_, StorageState>,
-    monitor: tauri::State<'_, MonitorState>,
-) -> Result<MonitoringOutcome, String> {
-    perform_check(&app, storage.inner(), monitor.inner()).await
+async fn check_now(app: AppHandle) -> Result<CheckStartResult, String> {
+    let runtime = app.state::<MonitorState>().runtime.clone();
+    runtime.check_now().await
 }
 
-async fn perform_check(
-    app: &AppHandle,
-    storage: &StorageState,
-    monitor: &MonitorState,
-) -> Result<MonitoringOutcome, String> {
-    let Some(_guard) = monitor.data_operation.try_acquire() else {
-        log::warn!("giveaway check skipped because a check or data cleanup is already running");
-        return Err("data operation is already running".to_owned());
-    };
-    if storage
-        .database
-        .lock()
-        .map_err(|_| "database lock is unavailable".to_owned())?
-        .initial_sync_choice_required()
-        .map_err(|error| error.to_string())?
-    {
-        return Err("initial synchronization mode must be selected first".to_owned());
-    }
-    if let Ok(mut status) = monitor.status.lock() {
-        status.record_started(now_utc());
-    }
-    log::info!("giveaway check started");
-
-    let result = perform_check_inner(storage, monitor).await;
-    if result.is_ok()
-        && let Err(error) = deliver_pending_notifications(app, storage)
-    {
-        log::error!("pending notification delivery could not complete: {error}");
-    }
-    for (level, message) in check_result_diagnostics(&result) {
-        log::log!(level, "{message}");
-    }
-    record_finished(monitor, &result);
-    result
-}
-
-async fn perform_check_inner(
-    storage: &StorageState,
-    monitor: &MonitorState,
-) -> Result<MonitoringOutcome, String> {
-    let settings = storage
-        .database
-        .lock()
-        .map_err(|_| "database lock is unavailable".to_owned())?
-        .settings()
-        .map_err(|error| error.to_string())?;
-    let fetcher = monitor
-        .fetcher
-        .lock()
-        .map_err(|_| "HTTP client lock is unavailable".to_owned())?
-        .clone();
-    let source_result = check_sources(
-        &fetcher,
-        settings.givee_club_enabled,
-        settings.games_for_farm_enabled,
-        settings.zeros_enabled,
-    )
-    .await;
-    let mut database = storage
-        .database
-        .lock()
-        .map_err(|_| "database lock is unavailable".to_owned())?;
-    apply_source_check(&mut database, source_result).map_err(|error| error.to_string())
-}
-
-fn record_finished(monitor: &MonitorState, result: &Result<MonitoringOutcome, String>) {
-    if let Ok(mut status) = monitor.status.lock() {
-        status.record_finished(now_utc(), result);
+fn emit_monitor_changed(app: &AppHandle) {
+    if let Err(error) = app.emit("monitor-changed", ()) {
+        log::warn!("could not emit monitor change event: {error}");
     }
 }
 
 fn now_utc() -> String {
-    OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .expect("RFC 3339 timestamp formatting should succeed")
+    giveaway_scout_runtime::now_utc()
 }
-
-async fn monitor_loop(app_handle: tauri::AppHandle) {
-    loop {
-        let initial_sync_choice_required = app_handle
-            .state::<StorageState>()
-            .database
-            .lock()
-            .ok()
-            .and_then(|database| database.initial_sync_choice_required().ok())
-            .unwrap_or(false);
-        if initial_sync_choice_required {
-            log::info!("waiting for the initial synchronization mode to be selected");
-            app_handle
-                .state::<MonitorState>()
-                .schedule_changed
-                .notified()
-                .await;
-            continue;
-        }
-
-        {
-            let storage = app_handle.state::<StorageState>();
-            let monitor = app_handle.state::<MonitorState>();
-            let _ = perform_check(&app_handle, storage.inner(), monitor.inner()).await;
-        }
-
-        let interval_minutes = app_handle
-            .state::<StorageState>()
-            .database
-            .lock()
-            .ok()
-            .and_then(|database| database.settings().ok())
-            .map_or(15, |settings| settings.check_interval_minutes.max(5));
-        let monitor = app_handle.state::<MonitorState>();
-        log::info!("next giveaway check in {interval_minutes} minutes");
-        tokio::select! {
-            () = tokio::time::sleep(Duration::from_secs(u64::from(interval_minutes) * 60)) => {}
-            () = monitor.schedule_changed.notified() => {
-                log::info!("giveaway check schedule changed; recalculating interval");
-            }
-        }
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut context = tauri::generate_context!();
@@ -959,18 +1013,6 @@ pub fn run() {
         context.config_mut().identifier.push_str(".dev");
     }
 
-    let log_builder = tauri_plugin_log::Builder::new()
-        .level(log::LevelFilter::Debug)
-        .max_file_size(2_000_000)
-        .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne);
-    #[cfg(feature = "ui-tests")]
-    let log_builder = log_builder.targets([
-        tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
-        tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Folder {
-            path: test_profile.root.join("logs"),
-            file_name: Some("ui-tests".into()),
-        }),
-    ]);
     let builder = tauri::Builder::default();
     #[cfg(feature = "ui-tests")]
     let builder = builder.plugin(tauri_plugin_wdio_webdriver::init_with_port(
@@ -998,9 +1040,15 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
-        .plugin(log_builder.build())
+        .plugin(tauri_plugin_dialog::init())
         .on_window_event(|window, event| {
             if window.label() != "main" {
+                return;
+            }
+            if matches!(event, WindowEvent::Focused(true)) {
+                if let Err(error) = window.request_user_attention(None) {
+                    log::warn!("could not clear taskbar attention: {error}");
+                }
                 return;
             }
             let WindowEvent::CloseRequested { api, .. } = event else {
@@ -1025,12 +1073,42 @@ pub fn run() {
             let data_directory = app.path().app_local_data_dir()?;
             #[cfg(feature = "ui-tests")]
             let data_directory = ui_tests::profile().root.join("data");
+            let profile_guard = Arc::new(ProfileGuard::acquire(&data_directory).inspect_err(|error| {
+                #[cfg(all(target_os = "windows", not(feature = "ui-tests")))]
+                show_profile_open_error(error);
+                #[cfg(any(not(target_os = "windows"), feature = "ui-tests"))]
+                let _ = error;
+            })?);
             #[cfg(feature = "ui-tests")]
             let new_profile = !data_directory.join("giveaway-scout.db").exists();
             let (database, database_recovery) =
                 Database::open_with_recovery(data_directory.join("giveaway-scout.db"))?;
             #[cfg(feature = "ui-tests")]
             if new_profile { database.update_settings(&ui_tests::seed_settings())?; }
+            let settings = database.settings()?;
+            let default_log_directory = app
+                .path()
+                .app_log_dir()
+                .unwrap_or_else(|_| data_directory.join("logs"));
+            #[cfg(not(feature = "ui-tests"))]
+            let forced_log_directory = None;
+            #[cfg(feature = "ui-tests")]
+            let forced_log_directory = Some(ui_tests::log_directory(&settings));
+            let (logging_state, file_dispatch) =
+                logging::initialize(&settings, default_log_directory, forced_log_directory);
+            app.manage(logging_state);
+            app.handle().plugin(
+                tauri_plugin_log::Builder::new()
+                    .level(log::LevelFilter::Debug)
+                    .targets([
+                        tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                        tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Dispatch(
+                            file_dispatch,
+                        )),
+                    ])
+                    .build(),
+            )?;
+            apply_log_level(settings.verbose_logging);
             if let Some(recovery) = database_recovery.as_ref() {
                 log::error!(
                     "damaged SQLite database was preserved at {} before creating a clean database: {}",
@@ -1038,22 +1116,27 @@ pub fn run() {
                     recovery.original_error
                 );
             }
-            let settings = database.settings()?;
             let initial_sync_choice_required = database.initial_sync_choice_required()?;
-            apply_log_level(settings.verbose_logging);
 
+            let database = Arc::new(Mutex::new(database));
+            let delivery_app = app.handle().clone();
+            let observer_app = app.handle().clone();
+            let runtime = Runtime::new(
+                database.clone(),
+                redirect_pipeline::dependencies(
+                    Arc::new(move |record, settings| deliver_notification(&delivery_app, record, settings)),
+                    Arc::new(move |event| runtime_event(&observer_app, event)),
+                ),
+            ).map_err(std::io::Error::other)?;
+            runtime.retain_profile_guard(profile_guard.clone());
             app.manage(StorageState {
-                database: Mutex::new(database),
+                database,
                 database_recovery,
+                _profile_guard: profile_guard,
             });
             app.manage(MonitorState {
-                fetcher: Mutex::new(HttpPageFetcher::with_policy(
-                    settings.http_timeout_seconds,
-                    settings.http_retry_count,
-                )?),
-                data_operation: DataOperationGate::default(),
-                status: Mutex::new(MonitorSnapshot::default()),
-                schedule_changed: Notify::new(),
+                data_operation: runtime.data_operation(),
+                runtime,
             });
             app.manage(create_tray(app, effective_language(&settings))?);
             updates::initialize(app.handle())?;
@@ -1091,13 +1174,13 @@ pub fn run() {
             handle_deep_links(app.handle(), initial_deep_links);
 
             if let Some(storage) = app.try_state::<StorageState>()
-                && let Ok(database) = storage.database.lock()
-                && let Err(error) = sync_attention(app.handle(), &database)
+                && let Err(error) = unread_notification_count(storage.inner())
+                    .and_then(|unread| sync_attention(app.handle(), unread, false))
             {
                 log::warn!("could not restore unread notification attention: {error}");
             }
 
-            if let Err(error) = sync_autostart(app.handle(), settings.start_at_login) {
+            if let Err(error) = sync_autostart(app.handle(), &settings) {
                 log::error!("could not reconcile autostart setting: {error}");
             }
 
@@ -1118,8 +1201,12 @@ pub fn run() {
                 log::info!("application started hidden in tray by autostart or system activation");
             }
 
-            let app_handle = app.handle().clone();
-            tauri::async_runtime::spawn(monitor_loop(app_handle));
+            let runtime = app.state::<MonitorState>().runtime.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = runtime.run(RunMode::Watch).await {
+                    log::error!("giveaway monitor stopped: {error}");
+                }
+            });
             usage_statistics::start(app.handle());
             log::info!("Giveaway Scout backend initialized");
             Ok(())
@@ -1128,9 +1215,14 @@ pub fn run() {
             get_app_state,
             get_storage_snapshot,
             update_settings,
+            get_logging_state,
+            choose_log_directory,
+            open_log_directory,
             clear_giveaway_data,
             get_notification_history,
+            get_notification_history_page,
             mark_all_notifications_read,
+            mark_notification_read,
             open_notification,
             send_test_notification,
             check_now,
@@ -1150,7 +1242,20 @@ pub fn run() {
     if let Err(error) = macos_notifications::register_early(&application.config().identifier) {
         log::warn!("macOS notifications unavailable: {error}");
     }
-    application.run(|_, _| {});
+    application.run(|app, event| {
+        if let tauri::RunEvent::ExitRequested { api, code, .. } = event
+            && let Some(monitor) = app.try_state::<MonitorState>()
+            && !monitor.runtime.is_stopped()
+        {
+            api.prevent_exit();
+            let runtime = monitor.runtime.clone();
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                runtime.shutdown().await;
+                app.exit(code.unwrap_or(0));
+            });
+        }
+    });
 }
 
 #[cfg(test)]
@@ -1205,6 +1310,36 @@ mod tests {
                     assert!(!request.play_sound);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn free_steam_keys_notification_shows_its_source_and_steam_platform() {
+        let record = giveaway_scout_core::NotificationRecord {
+            store: giveaway_scout_core::GameStore::Steam,
+            id: "fsk-test".into(),
+            tracking_key: Some("FreeSteamKeys:258".into()),
+            campaign_id: None,
+            origin_source: None,
+            origin_name: None,
+            detected_sources: vec![GiveawaySource::FreeSteamKeys],
+            source: "freeSteamKeys".into(),
+            kind: "giveaway".into(),
+            title: "Sorcerer Adventure".into(),
+            url: "https://www.freesteamkeys.com/open/sorcerer-adventure".into(),
+            received_at_utc: "2026-11-07T10:00:00Z".into(),
+            read_at_utc: None,
+            delivery_state: "pending".into(),
+            delivery_attempts: 0,
+            last_delivery_error: None,
+        };
+        for language in ["ru", "en"] {
+            let request = super::notification_request(&record, language, true);
+            assert!(request.body.contains("FreeSteamKeys"));
+            assert!(request.body.contains("Steam"));
+            assert!(request.body.contains(&record.url));
+            assert!(request.title.contains("Sorcerer Adventure"));
+            assert!(request.play_sound);
         }
     }
 
@@ -1373,75 +1508,39 @@ mod tests {
     }
 
     #[test]
-    fn successful_check_updates_last_successful_timestamp() {
-        let mut status = MonitorSnapshot::default();
-        status.record_started("2026-10-10T10:00:00Z".to_owned());
-        status.record_finished(
-            "2026-10-10T10:00:01Z".to_owned(),
-            &Ok(MonitoringOutcome {
-                check_performed: true,
-                ..MonitoringOutcome::default()
-            }),
-        );
-
-        assert!(!status.is_checking);
+    fn source_snapshot_uses_active_states_and_keeps_diagnostics_structured() {
+        use giveaway_scout_core::{SourceFailureReason, SourcePhase, SourceStatus};
+        let mut healthy = SourceStatus::new(GiveawaySource::FreeSteamKeys);
+        healthy.phase = SourcePhase::Checking;
+        healthy.last_successful_check_utc = Some("2026-11-07T10:00:00Z".into());
+        let mut failed = SourceStatus::new(GiveawaySource::GamesForFarm);
+        failed.phase = SourcePhase::Error;
+        failed.last_error = Some(SourceFailure {
+            source: failed.source,
+            message: "request timed out".into(),
+            reason: SourceFailureReason::Timeout,
+        });
+        let mut disabled = SourceStatus::new(GiveawaySource::Zeros);
+        disabled.phase = SourcePhase::Disabled;
+        disabled.last_error = Some(SourceFailure {
+            source: disabled.source,
+            message: "old failure".into(),
+            reason: SourceFailureReason::Unknown,
+        });
+        let snapshot = MonitorSnapshot::from_sources(vec![healthy, failed, disabled]);
+        assert!(snapshot.is_checking);
+        assert_eq!(snapshot.last_failure_count, 1);
         assert_eq!(
-            status.last_successful_check_utc.as_deref(),
-            Some("2026-10-10T10:00:01Z")
-        );
-        assert!(status.last_error.is_none());
-    }
-
-    #[test]
-    fn failed_check_preserves_previous_success_and_records_error() {
-        let mut status = MonitorSnapshot {
-            last_successful_check_utc: Some("2026-10-10T09:00:00Z".to_owned()),
-            ..MonitorSnapshot::default()
-        };
-        status.record_started("2026-10-10T10:00:00Z".to_owned());
-        status.record_finished(
-            "2026-10-10T10:00:01Z".to_owned(),
-            &Err("network unavailable".to_owned()),
-        );
-
-        assert_eq!(
-            status.last_successful_check_utc.as_deref(),
-            Some("2026-10-10T09:00:00Z")
-        );
-        assert_eq!(status.last_error.as_deref(), Some("network unavailable"));
-    }
-
-    #[test]
-    fn partial_source_errors_keep_the_source_name_and_previous_success() {
-        let mut status = MonitorSnapshot {
-            last_successful_check_utc: Some("2026-10-19T10:00:00Z".to_owned()),
-            ..MonitorSnapshot::default()
-        };
-        status.record_finished(
-            "2026-10-19T11:00:00Z".to_owned(),
-            &Ok(MonitoringOutcome {
-                check_performed: true,
-                failures: vec![SourceFailure {
-                    source: GiveawaySource::GamesForFarm,
-                    message: "request timed out".to_owned(),
-                    reason: giveaway_scout_core::SourceFailureReason::Timeout,
-                }],
-                ..MonitoringOutcome::default()
-            }),
-        );
-        assert_eq!(
-            status.last_error.as_deref(),
+            snapshot.last_error.as_deref(),
             Some("Games for Farm: request timed out")
         );
-        assert_eq!(status.last_failure_count, 1);
-        let json = serde_json::to_value(&status).unwrap();
-        assert_eq!(json["sourceFailures"][0]["reason"]["code"], "timeout");
-        assert_eq!(json["sourceFailures"][0]["source"], "gamesForFarm");
-        assert_eq!(json["sourceFailures"][0]["message"], "request timed out");
         assert_eq!(
-            status.last_successful_check_utc.as_deref(),
-            Some("2026-10-19T10:00:00Z")
+            snapshot.last_successful_check_utc.as_deref(),
+            Some("2026-11-07T10:00:00Z")
         );
+        let json = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(json["sourceFailures"][0]["reason"]["code"], "timeout");
+        assert_eq!(json["sourceStates"].as_array().unwrap().len(), 3);
     }
 
     #[test]

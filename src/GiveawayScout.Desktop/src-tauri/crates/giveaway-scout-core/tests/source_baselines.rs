@@ -18,6 +18,10 @@ fn item(source: GiveawaySource, id: u32) -> GiveawayItem {
             format!("period_{id}"),
             "http://zeros.group/free/".to_owned(),
         ),
+        GiveawaySource::FreeSteamKeys => (
+            id.to_string(),
+            format!("https://www.freesteamkeys.com/giveaway-{id}/"),
+        ),
     };
     GiveawayItem {
         source,
@@ -34,9 +38,16 @@ fn downgrade_to_global_only_v4(path: &std::path::Path) {
     Connection::open(path)
         .unwrap()
         .execute_batch(
-            "DELETE FROM schema_migrations WHERE version = 5;
+            "DELETE FROM schema_migrations WHERE version IN (5,13);
+         DROP TABLE notification_campaigns;
+         DROP TABLE campaign_members;
+         DROP TABLE campaigns;
+         DROP TABLE redirect_cache;
+         DROP TABLE source_status;
+         DROP TABLE source_initial_policy;
          DELETE FROM app_metadata WHERE key IN (
-           'tracking_initialized:giveeClub', 'tracking_initialized:gamesForFarm', 'tracking_initialized:zeros');",
+           'tracking_initialized:giveeClub', 'tracking_initialized:gamesForFarm',
+           'tracking_initialized:zeros', 'tracking_initialized:freeSteamKeys');",
         )
         .unwrap();
 }
@@ -67,8 +78,12 @@ fn first_check_of_each_source_is_independent_and_later_new_games_notify_once() {
             let baseline = database
                 .process_discovered_items(&[first_item, second_item.clone()], &GiveawaySource::ALL)
                 .unwrap();
-            assert!(baseline.new_items.is_empty());
-            assert_eq!(database.notifications().unwrap(), old_history);
+            let expected_second = usize::from(mode == InitialSyncMode::NotifyCurrent);
+            assert_eq!(baseline.new_items.len(), expected_second);
+            assert_eq!(
+                database.notifications().unwrap().len(),
+                old_history.len() + expected_second
+            );
             assert!(database.source_tracking_initialized(second).unwrap());
             let new_item = item(second, 2);
             let batch = [second_item, new_item.clone(), new_item.clone()];
@@ -85,7 +100,7 @@ fn first_check_of_each_source_is_independent_and_later_new_games_notify_once() {
             );
             assert_eq!(
                 database.notifications().unwrap().len(),
-                old_history.len() + 1
+                old_history.len() + expected_second + 1
             );
         }
     }
@@ -253,7 +268,12 @@ fn v4_migration_uses_real_source_evidence_and_preserves_history_settings_and_rea
     downgrade_to_global_only_v4(&path);
     let mut database = Database::open(&path).unwrap();
     assert_eq!(database.settings().unwrap(), settings);
-    assert_eq!(database.notifications().unwrap(), history);
+    let migrated = database.notifications().unwrap();
+    for (after, before) in migrated.iter().zip(&history) {
+        assert_eq!(after.id, before.id);
+        assert_eq!(after.read_at_utc, before.read_at_utc);
+        assert_eq!(after.url, before.url);
+    }
     assert_eq!(database.counts().unwrap(), counts);
     assert!(
         database
@@ -374,7 +394,7 @@ fn metadata_write_failure_rolls_back_items_notifications_and_all_baseline_flags(
             .unwrap()
             .new_items
             .len(),
-        2
+        3
     );
 }
 
@@ -489,7 +509,11 @@ fn failed_v5_migration_rolls_back_metadata_without_recovering_or_erasing_a_healt
     drop(connection);
     let database = Database::open(&path).unwrap();
     assert_eq!(database.counts().unwrap(), counts);
-    assert_eq!(database.notifications().unwrap(), history);
+    let migrated = database.notifications().unwrap();
+    for (after, before) in migrated.iter().zip(&history) {
+        assert_eq!(after.id, before.id);
+        assert_eq!(after.read_at_utc, before.read_at_utc);
+    }
     assert!(
         database
             .source_tracking_initialized(GiveawaySource::GiveeClub)

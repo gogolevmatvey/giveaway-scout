@@ -8,10 +8,11 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager, utils::config::BundleType};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
+use crate::notifications::NotificationRequest;
 use crate::operations::{DataOperationGate, DataOperationGuard};
 
-const MAX_PACKAGE_BYTES: usize = 256 * 1024 * 1024;
-const MAX_NOTES_CHARS: usize = 20_000;
+const MAX_PACKAGE_BYTES: usize = giveaway_scout_updater::MAX_PACKAGE_BYTES;
+const MAX_NOTES_CHARS: usize = giveaway_scout_updater::MAX_NOTES_CHARS;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -132,11 +133,7 @@ impl Drop for Operation<'_> {
 }
 
 fn secure_url(url: &url::Url) -> bool {
-    url.scheme() == "https"
-        && url.host_str().is_some()
-        && url.username().is_empty()
-        && url.password().is_none()
-        && url.fragment().is_none()
+    giveaway_scout_updater::secure_url(url)
 }
 
 fn validate_config(value: &serde_json::Value) -> Result<(), String> {
@@ -249,19 +246,29 @@ pub(crate) fn initialize(app: &AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub(crate) fn get_update_state(service: tauri::State<'_, Service>) -> Snapshot {
+    // Display-only fixture in the validated, isolated UI-test profile. The real
+    // service mode and pending package remain unchanged, so it cannot install.
+    #[cfg(feature = "ui-tests")]
+    if crate::ui_tests::profile()
+        .root
+        .join("update-banner-fixture")
+        .is_file()
+    {
+        let mut snapshot = service.view();
+        snapshot.mode = Mode::Enabled;
+        snapshot.phase = Phase::Available;
+        snapshot.candidate = Some(Candidate {
+            token: "layout-only-no-install".into(),
+            version: "2.0.0".into(),
+            notes: "Layout fixture".into(),
+        });
+        return snapshot;
+    }
     service.view()
 }
 
 fn client_policy(client: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
-    client
-        .https_only(true)
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if secure_url(attempt.url()) && attempt.previous().len() < 5 {
-                attempt.follow()
-            } else {
-                attempt.error("unsafe or excessive update redirect")
-            }
-        }))
+    giveaway_scout_updater::client_policy(client)
 }
 
 #[tauri::command]
@@ -325,7 +332,78 @@ pub(crate) async fn check_for_updates(app: AppHandle) -> Result<Snapshot, String
             return Err("UPDATES_CHECK_FAILED".to_owned());
         }
     }
-    Ok(service.view())
+    let snapshot = service.view();
+    if let Some(candidate) = &snapshot.candidate
+        && let Err(error) = notify_available_update(&app, &candidate.version)
+    {
+        // A notification failure must not hide a verified update in the UI.
+        log::warn!("could not announce update {}: {error}", candidate.version);
+    }
+    Ok(snapshot)
+}
+
+fn announce_update_once(
+    database: &giveaway_scout_core::Database,
+    version: &str,
+    show: impl FnOnce() -> Result<(), String>,
+) -> Result<bool, String> {
+    if database
+        .update_was_announced(version)
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(false);
+    }
+    show()?;
+    database
+        .mark_update_announced(version)
+        .map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+fn update_notification_request(
+    version: &str,
+    language: &str,
+    play_sound: bool,
+) -> NotificationRequest {
+    if language == "ru" {
+        NotificationRequest {
+            title: format!("Доступно обновление Giveaway Scout {version}"),
+            body: "Откройте приложение и нажмите «Обновить», чтобы установить новую версию."
+                .to_owned(),
+            action_label: "Открыть".to_owned(),
+            play_sound,
+        }
+    } else {
+        NotificationRequest {
+            title: format!("Giveaway Scout {version} update available"),
+            body: "Open the app and click Update to install the new version.".to_owned(),
+            action_label: "Open".to_owned(),
+            play_sound,
+        }
+    }
+}
+
+fn notify_available_update(app: &AppHandle, version: &str) -> Result<(), String> {
+    let storage = app.state::<crate::StorageState>();
+    let database = storage
+        .database
+        .lock()
+        .map_err(|_| "database lock unavailable".to_owned())?;
+    let settings = database.settings().map_err(|error| error.to_string())?;
+    let request = update_notification_request(
+        version,
+        crate::effective_language(&settings),
+        settings.notification_sound_enabled,
+    );
+    let activation_app = app.clone();
+    announce_update_once(&database, version, || {
+        crate::notifications::show(app, &request, Some("giveaway-scout://show"), move || {
+            if let Err(error) = crate::show_main_window(&activation_app) {
+                log::warn!("could not open available update: {error}");
+            }
+        })
+    })?;
+    Ok(())
 }
 
 fn require_consent(
@@ -417,13 +495,39 @@ pub(crate) async fn install_update(
         {
             return Err("database checkpoint is busy".to_owned());
         }
-        // install verifies bytes and signed version again before any executable
-        // is started. Windows invokes Tauri's normal cleanup-before-exit hook.
-        tauri::async_runtime::spawn_blocking(move || {
-            update.install(bytes).map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(|error| error.to_string())??;
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            // Spawn before stopping the runtime: an OS launch error must leave
+            // monitoring usable. The setup waits for this exact installed PID;
+            // the application's ExitRequested hook drains the shared runtime.
+            let public_key = app
+                .config()
+                .plugins
+                .0
+                .get("updater")
+                .and_then(|value| value.get("pubkey"))
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| "missing update public key".to_owned())?;
+            let filename = format!("Giveaway Scout_{}_x64-setup.exe", update.version);
+            let package = giveaway_scout_updater::stage_installer(
+                public_key,
+                &update.signature,
+                &update.version,
+                &filename,
+                &bytes,
+            )?;
+            package.launch(std::process::id(), true)?;
+            app.exit(0);
+        }
+        #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+        {
+            // Other platforms retain Tauri's native package installation.
+            tauri::async_runtime::spawn_blocking(move || {
+                update.install(bytes).map_err(|error| error.to_string())
+            })
+            .await
+            .map_err(|error| error.to_string())??;
+        }
         Ok::<(), String>(())
     }
     .await;
@@ -435,13 +539,51 @@ pub(crate) async fn install_update(
         });
         return Err("UPDATES_INSTALL_FAILED".to_owned());
     }
-    // Windows normally exits from install(); other platforms need an explicit restart.
-    app.restart();
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    {
+        monitor.runtime.shutdown().await;
+        app.restart();
+    }
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_announcements_retry_failures_but_do_not_repeat_successful_versions() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("updates.db");
+        let database = giveaway_scout_core::Database::open(&path).unwrap();
+        assert!(announce_update_once(&database, "1.2.0", || Err("unavailable".into())).is_err());
+        assert!(!database.update_was_announced("1.2.0").unwrap());
+        assert!(announce_update_once(&database, "1.2.0", || Ok(())).unwrap());
+        drop(database);
+        let database = giveaway_scout_core::Database::open(&path).unwrap();
+        assert!(
+            !announce_update_once(&database, "1.2.0", || panic!("repeated notification")).unwrap()
+        );
+        assert!(announce_update_once(&database, "1.3.0", || Ok(())).unwrap());
+        assert!(
+            !announce_update_once(&database, "1.2.0", || panic!("old version repeated")).unwrap()
+        );
+    }
+
+    #[test]
+    fn update_notifications_are_localized_and_respect_sound_settings() {
+        let russian = update_notification_request("1.2.0", "ru", false);
+        assert_eq!(russian.title, "Доступно обновление Giveaway Scout 1.2.0");
+        assert!(russian.body.contains("«Обновить»"));
+        assert_eq!(russian.action_label, "Открыть");
+        assert!(!russian.play_sound);
+        let english = update_notification_request("1.2.0", "en", true);
+        assert_eq!(english.title, "Giveaway Scout 1.2.0 update available");
+        assert!(english.body.contains("Update"));
+        assert_eq!(english.action_label, "Open");
+        assert!(english.play_sound);
+    }
 
     #[tokio::test]
     async fn real_http_client_rejects_plaintext_before_connecting() {

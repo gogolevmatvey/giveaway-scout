@@ -66,10 +66,82 @@ fn games_for_farm_store_uses_platform_icons_instead_of_artwork_or_title() {
         items.iter().map(|item| item.store).collect::<Vec<_>>(),
         [
             GameStore::Steam,
+            GameStore::EpicGames,
             GameStore::Unknown,
             GameStore::Gog,
-            GameStore::EpicGames,
             GameStore::Gog
+        ]
+    );
+}
+
+#[test]
+fn givee_club_preserves_page_order_across_kinds_and_nonsequential_identifiers() {
+    let items = parse_givee_club(
+        r#"
+        <a class="event-card" href="/event/30">
+          <span class="event-title">First on page</span>
+          <i class="event-type-icon raffle"></i>
+        </a>
+        <a class="event-card" href="/event/900">
+          <span class="event-title">Second on page</span>
+        </a>
+        <a class="event-card" href="/event/2">
+          <span class="event-title">Third on page</span>
+          <i class="event-type-icon raffle"></i>
+        </a>
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| (item.source_id.as_str(), item.title.as_str(), item.kind))
+            .collect::<Vec<_>>(),
+        [
+            ("event/30", "First on page", GiveawayKind::Raffle),
+            ("event/900", "Second on page", GiveawayKind::Giveaway),
+            ("event/2", "Third on page", GiveawayKind::Raffle),
+        ]
+    );
+}
+
+#[test]
+fn games_for_farm_preserves_mixed_card_order_while_skipping_service_cards() {
+    let items = parse_games_for_farm(
+        r#"
+        <div class="rozygryshi__card extra-class">
+          <a class="card-content__title" href="/game?n=30">First on page</a>
+        </div>
+        <div class="razdachi__card">
+          <a class="card-content__title" href="/user#settings">Content 18+</a>
+        </div>
+        <div class="razdachi__card">
+          <a class="card-content__title" href="/game?n=900">Second on page</a>
+        </div>
+        <div class="rozygryshi__card">
+          <a class="card-content__title" href="https://freeanywhere.net/user#settings"> </a>
+        </div>
+        <div class="extra-class rozygryshi__card">
+          <a class="card-content__title" href="/game?n=2">Third on page</a>
+        </div>
+        <div class="razdachi__card">
+          <a class="card-content__title" href="/game?n=501">Fourth on page</a>
+        </div>
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| (item.source_id.as_str(), item.title.as_str(), item.kind))
+            .collect::<Vec<_>>(),
+        [
+            ("/game?n=30", "First on page", GiveawayKind::Raffle),
+            ("/game?n=900", "Second on page", GiveawayKind::Giveaway),
+            ("/game?n=2", "Third on page", GiveawayKind::Raffle),
+            ("/game?n=501", "Fourth on page", GiveawayKind::Giveaway),
         ]
     );
 }

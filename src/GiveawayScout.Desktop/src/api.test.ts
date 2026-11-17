@@ -4,14 +4,18 @@ import {
   checkNow,
   checkForUpdates,
   clearGiveawayData,
+  chooseLogDirectory,
   getAppState,
-  getNotificationHistory,
+  getLoggingState,
+  getNotificationHistoryPage,
   getStorageSnapshot,
   getUpdateState,
   installUpdate,
   markAllNotificationsRead,
+  markNotificationRead,
   notificationErrorKey,
   openNotification,
+  openLogDirectory,
   sendTestNotification,
   updateSettings,
 } from "./api";
@@ -64,20 +68,26 @@ describe("desktop API", () => {
     const expected = {
       settings: {
         checkIntervalMinutes: 15,
+        sourceCheckIntervals: {freeSteamKeys: 60, giveeClub: 60, gamesForFarm: 60, zeros: 60},
         httpTimeoutSeconds: 30,
         httpRetryCount: 2,
         giveeClubEnabled: true,
         gamesForFarmEnabled: true,
         zerosEnabled: false,
+        freeSteamKeysEnabled: true,
         steamNotificationsEnabled: true,
         epicGamesNotificationsEnabled: true,
         gogNotificationsEnabled: true,
         notificationSoundEnabled: true,
         startAtLogin: false,
+        autostartTarget: "gui" as const,
         startInTray: true,
         keepRunningInTray: false,
         languageCode: null,
         verboseLogging: false,
+        logMaxFileSizeMb: 2,
+        logFileCount: 1,
+        logDirectory: null,
         initialSyncMode: null,
       },
       counts: {
@@ -107,11 +117,8 @@ describe("desktop API", () => {
 
   it("requests an immediate giveaway check from Rust", async () => {
     const expected = {
-      checkPerformed: true,
-      isInitialSynchronization: false,
-      baselineDeferred: false,
-      newItems: [],
-      failures: [],
+      startedSources: ["freeSteamKeys", "giveeClub"],
+      alreadyRunningSources: ["gamesForFarm"],
     };
     vi.mocked(invoke).mockResolvedValue(expected);
 
@@ -119,16 +126,35 @@ describe("desktop API", () => {
     expect(invoke).toHaveBeenCalledWith("check_now");
   });
 
-  it("requests and opens notification history through Rust", async () => {
-    vi.mocked(invoke).mockResolvedValueOnce([]).mockResolvedValueOnce(undefined);
+  it("requests the first bounded history page and opens a record through Rust", async () => {
+    const page = { items: [], nextCursor: "opaque-next-page" };
+    vi.mocked(invoke).mockResolvedValueOnce(page).mockResolvedValueOnce(undefined);
 
-    await expect(getNotificationHistory()).resolves.toEqual([]);
+    await expect(getNotificationHistoryPage()).resolves.toEqual(page);
     await expect(openNotification("notification-1")).resolves.toBeUndefined();
 
-    expect(invoke).toHaveBeenNthCalledWith(1, "get_notification_history");
+    expect(invoke).toHaveBeenNthCalledWith(1, "get_notification_history_page", { cursor: null });
     expect(invoke).toHaveBeenNthCalledWith(2, "open_notification", {
       notificationId: "notification-1",
     });
+  });
+
+  it("passes an opaque history cursor unchanged and preserves pagination errors for retry", async () => {
+    const cursor = '{"sort":"not interpreted by the renderer"}';
+    const failure = new Error("temporary history read failure");
+    vi.mocked(invoke).mockRejectedValueOnce(failure).mockResolvedValueOnce({ items: [], nextCursor: null });
+
+    await expect(getNotificationHistoryPage(cursor)).rejects.toBe(failure);
+    await expect(getNotificationHistoryPage(cursor)).resolves.toEqual({ items: [], nextCursor: null });
+    expect(invoke).toHaveBeenNthCalledWith(1, "get_notification_history_page", { cursor });
+    expect(invoke).toHaveBeenNthCalledWith(2, "get_notification_history_page", { cursor });
+    expect(invoke).not.toHaveBeenCalledWith("get_notification_history");
+  });
+
+  it("marks one campaign as read without invoking a browser command", async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    await markNotificationRead("legacy-notification-id");
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("mark_notification_read", { notificationId: "legacy-notification-id" });
   });
 
   it("marks all notifications as read through Rust", async () => {
@@ -149,20 +175,26 @@ describe("desktop API", () => {
   it("updates settings and clears saved giveaway data through Rust", async () => {
     const settings = {
       checkIntervalMinutes: 30,
+      sourceCheckIntervals: {freeSteamKeys: 15, giveeClub: 120, gamesForFarm: 45, zeros: 90},
       httpTimeoutSeconds: 45,
       httpRetryCount: 3,
       giveeClubEnabled: true,
       gamesForFarmEnabled: false,
       zerosEnabled: true,
+      freeSteamKeysEnabled: false,
       steamNotificationsEnabled: false,
       epicGamesNotificationsEnabled: true,
       gogNotificationsEnabled: true,
       notificationSoundEnabled: true,
       startAtLogin: false,
+      autostartTarget: "gui" as const,
       startInTray: true,
       keepRunningInTray: false,
       languageCode: "en" as const,
       verboseLogging: false,
+      logMaxFileSizeMb: 25,
+      logFileCount: 4,
+      logDirectory: "C:/Logs",
       initialSyncMode: "silent" as const,
     };
     vi.mocked(invoke).mockResolvedValue(undefined);
@@ -172,5 +204,18 @@ describe("desktop API", () => {
 
     expect(invoke).toHaveBeenNthCalledWith(1, "update_settings", { settings });
     expect(invoke).toHaveBeenNthCalledWith(2, "clear_giveaway_data");
+  });
+
+  it("queries logging and uses native folder commands without submitting a draft path to Open", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({activeFilePath:"C:/Original/Giveaway Scout.log"})
+      .mockResolvedValueOnce(null).mockResolvedValueOnce("C:/New logs").mockResolvedValueOnce(undefined);
+    await expect(getLoggingState()).resolves.toEqual({activeFilePath:"C:/Original/Giveaway Scout.log"});
+    await expect(chooseLogDirectory()).resolves.toBeNull();
+    await expect(chooseLogDirectory()).resolves.toBe("C:/New logs");
+    await openLogDirectory();
+    expect(invoke).toHaveBeenNthCalledWith(1, "get_logging_state");
+    expect(invoke).toHaveBeenNthCalledWith(2, "choose_log_directory");
+    expect(invoke).toHaveBeenNthCalledWith(3, "choose_log_directory");
+    expect(invoke).toHaveBeenNthCalledWith(4, "open_log_directory");
   });
 });

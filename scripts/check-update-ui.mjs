@@ -17,8 +17,9 @@ window.__TAURI_INTERNALS__ = { transformCallback:()=>1, unregisterCallback:()=>{
  const state=window.__smoke;
  if(command==='get_update_state') return structuredClone(state.update);
  if(command==='get_app_state') return {appName:'Giveaway Scout',version:'0.1.0',platform:'windows',architecture:'x86_64',isDevelopment:false};
- if(command==='get_notification_history') return [];
- if(command==='get_storage_snapshot') return {settings:{checkIntervalMinutes:15,httpTimeoutSeconds:30,httpRetryCount:2,giveeClubEnabled:true,gamesForFarmEnabled:true,zerosEnabled:false,steamNotificationsEnabled:true,epicGamesNotificationsEnabled:true,gogNotificationsEnabled:true,notificationSoundEnabled:true,startAtLogin:false,startInTray:true,keepRunningInTray:false,languageCode:state.language,verboseLogging:false,initialSyncMode:'silent'},counts:{trackedGiveaways:1,notificationHistory:0,unreadNotifications:0},dataSizeBytes:8192,databaseRecovery:null,initialSyncChoiceRequired:false,monitor:{isChecking:false,lastStartedAtUtc:null,lastCompletedAtUtc:null,lastSuccessfulCheckUtc:null,lastError:null,lastNewItems:0,lastFailureCount:0,sourceFailures:[]}};
+ if(command==='get_notification_history_page') return {items:[],nextCursor:null};
+ if(command==='get_logging_state') return {requestedAtStartup:{maxFileSizeMb:2,fileCount:1,directory:null},effectiveDirectory:'C:/Fixture logs',activeFilePath:'C:/Fixture logs/Giveaway Scout.log',maxFileSizeMb:2,fileCount:1,restartRequired:false,lastError:null,usingFallback:false};
+ if(command==='get_storage_snapshot') return {settings:{checkIntervalMinutes:60,sourceCheckIntervals:{freeSteamKeys:60,giveeClub:60,gamesForFarm:60,zeros:60},httpTimeoutSeconds:30,httpRetryCount:2,giveeClubEnabled:true,gamesForFarmEnabled:true,zerosEnabled:false,freeSteamKeysEnabled:true,steamNotificationsEnabled:true,epicGamesNotificationsEnabled:true,gogNotificationsEnabled:true,notificationSoundEnabled:true,startAtLogin:false,startInTray:true,keepRunningInTray:false,languageCode:state.language,verboseLogging:false,logMaxFileSizeMb:2,logFileCount:1,logDirectory:null,initialSyncMode:'silent'},counts:{trackedGiveaways:1,notificationHistory:0,unreadNotifications:0},dataSizeBytes:8192,databaseRecovery:null,initialSyncChoiceRequired:false,monitor:{isChecking:false,lastStartedAtUtc:null,lastCompletedAtUtc:null,lastSuccessfulCheckUtc:null,lastError:null,lastNewItems:0,lastFailureCount:0,sourceFailures:[]}};
  if(command==='install_update') { state.calls.push({command,args}); state.update.phase='downloading'; state.update.downloadedBytes=1024; return new Promise(()=>{}); }
  if(command==='check_for_updates') { state.calls.push({command}); return structuredClone(state.update); }
  if(command==='plugin:event|listen') return 1;
@@ -80,30 +81,64 @@ try {
   };
   await command('Page.navigate', {url:`http://127.0.0.1:${server.address().port}/`});
   await waitFor(`!!document.querySelector('.update-banner')`, 'update banner');
-  await evaluate(`document.querySelector('.update-banner').click()`);
-  await waitFor(`!!document.querySelector('.app-updates .update-candidate .primary-button')`, 'update settings from banner');
+  assert.equal(await evaluate(`document.querySelectorAll('[role="dialog"]').length`), 0);
+  assert.match(await evaluate(`document.querySelector('.update-banner').textContent`), /Доступно обновление 0\.2\.0/);
+  assert.equal(await evaluate(`document.querySelector('.update-banner button').textContent.trim()`), 'Обновить');
+  for (const [width,height] of [[950,600],[1100,900]]) {
+    await command('Emulation.setDeviceMetricsOverride', {width,height,deviceScaleFactor:1,mobile:false});
+    const layout = await evaluate(`(() => {
+      const status=document.querySelector('.status-panel').getBoundingClientRect();
+      const banner=document.querySelector('.update-banner').getBoundingClientRect();
+      const content=document.querySelector('.content-grid').getBoundingClientRect();
+      const sources=document.querySelector('.sources-card').getBoundingClientRect();
+      const actions=document.querySelector('.source-actions').getBoundingClientRect();
+      return {statusBottom:status.bottom,bannerTop:banner.top,bannerBottom:banner.bottom,contentTop:content.top,
+        contentBottom:content.bottom,sourcesBottom:sources.bottom,actionsBottom:actions.bottom,
+        sourceCount:document.querySelectorAll('.source-row').length,
+        scrolls:document.documentElement.scrollHeight>innerHeight};
+    })()`);
+    assert.ok(layout.statusBottom <= layout.bannerTop, JSON.stringify(layout));
+    assert.ok(layout.bannerBottom <= layout.contentTop, JSON.stringify(layout));
+    assert.equal(layout.sourceCount, 4, JSON.stringify(layout));
+    assert.ok(layout.actionsBottom < layout.sourcesBottom, JSON.stringify(layout));
+    assert.ok(layout.sourcesBottom <= layout.contentBottom + 1, JSON.stringify(layout));
+    assert.equal(layout.scrolls, false, JSON.stringify(layout));
+  }
+  await evaluate(`document.querySelector('.update-banner button').click()`);
+  assert.equal(await evaluate(`window.__smoke.calls.filter(call=>call.command==='confirm').length`), 1);
+  assert.equal(await evaluate(`window.__smoke.calls.filter(call=>call.command==='install_update').length`), 0);
+  await evaluate(`document.querySelector('.header-button').click()`);
+  await waitFor(`!!document.querySelector('#settings-tab-updatesData')`, 'settings navigation');
+  await evaluate(`document.querySelector('#settings-tab-updatesData').click()`);
+  await waitFor(`!!document.querySelector('.app-updates .update-candidate .primary-button')?.offsetParent`, 'update settings from banner');
   assert.equal(await evaluate(`window.__smoke.calls.filter(call=>call.command==='install_update').length`), 0);
   assert.equal(await evaluate(`document.querySelector('.update-notes').childElementCount`), 0);
   assert.equal(await evaluate(`window.__noteExecuted===true`), false);
   await evaluate(`document.querySelector('.update-candidate .primary-button').click()`);
-  assert.equal(await evaluate(`window.__smoke.calls.filter(call=>call.command==='confirm').length`), 1);
+  assert.equal(await evaluate(`window.__smoke.calls.filter(call=>call.command==='confirm').length`), 2);
   assert.equal(await evaluate(`window.__smoke.calls.filter(call=>call.command==='install_update').length`), 0);
   await evaluate(`window.__smoke.confirmed=true; document.querySelector('.update-candidate .primary-button').click()`);
   await waitFor(`window.__smoke.calls.some(call=>call.command==='install_update')`, 'confirmed install');
   assert.deepEqual(await evaluate(`window.__smoke.calls.find(call=>call.command==='install_update').args`), {token:'test-candidate',confirmed:true});
   await waitFor(`document.querySelector('.danger-button').disabled && document.querySelector('.source-actions .primary-button').disabled`, 'data operations blocked');
   assert.equal(await evaluate(`document.querySelector('.update-candidate .primary-button').disabled`), true);
+  assert.equal(await evaluate(`document.querySelector('.update-banner button').disabled`), true);
+  await waitFor(`document.querySelector('.update-banner').textContent.includes('Скачивание:')`, 'banner download progress');
   await command('Page.reload');
   await waitFor(`!!document.querySelector('.update-banner')`, 'reload without real installation');
   await evaluate(`window.__smoke.language='en'; window.__smoke.update.mode='packageManager'`);
   await waitFor(`document.querySelector('.header-button').textContent.includes('Settings')`, 'English UI');
   await evaluate(`document.querySelector('.header-button').click()`);
+  await waitFor(`!!document.querySelector('#settings-tab-updatesData')`, 'settings navigation');
+  await evaluate(`document.querySelector('#settings-tab-updatesData').click()`);
+  await waitFor(`!!document.querySelector('.app-updates')?.offsetParent`, 'update settings section');
   await waitFor(`document.querySelector('.app-updates').textContent.includes('system package manager')`, 'APT message');
   assert.equal(await evaluate(`document.querySelectorAll('.app-updates button').length`), 0);
+  assert.equal(await evaluate(`document.querySelectorAll('.update-banner').length`), 0);
   await evaluate(`window.__smoke.update.mode='notConfigured'`);
   await waitFor(`document.querySelector('.app-updates').textContent.includes('not configured')`, 'unconfigured signing message');
   assert.equal(await evaluate(`document.querySelectorAll('.app-updates button').length`), 0);
-  console.log('PASS: banner/settings, plain release notes, no silent download/install, cancel/confirm token, data lock UI, English APT and unconfigured mode. Mock Tauri only; no updater, browser URLs or user database used.');
+  console.log('PASS: prominent banner below status at 950x600 and 1100x900, no startup dialog, direct update action, plain release notes, cancel/confirm token, progress and data lock UI, English APT and unconfigured mode. Mock Tauri only; no real updater, browser URLs or user database used.');
 } finally {
   websocket?.close();
   // A failed spawn has no PID and never emits 'exit'. Do not wait forever in

@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
-import { verifyInstallerScript } from './check-installer-bundle.mjs';
+import { verifyComponentInstallerScript, verifyComponentInstallerTranslations, verifyInstallerScript } from './check-installer-bundle.mjs';
+import { windowsComponentsOverlay } from './prepare-windows-components.mjs';
 
 const repository=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const tauri=path.join(repository,'src/GiveawayScout.Desktop/src-tauri');
@@ -15,7 +16,72 @@ test('one NSIS setup uses Windows language, RU/EN and English fallback without c
   assert.equal(nsis.displayLanguageSelector,false);
   assert.equal(config.identifier,'com.giveawayscout.desktop');
   assert.equal(nsis.installMode ?? 'currentUser','currentUser');
-  assert.equal(nsis.template,undefined,'Keep the upstream NSIS workflow');
+  assert.equal(nsis.template,undefined,'Experimental targets retain the upstream NSIS workflow');
+});
+
+test('Windows x64 uses a project-owned component template only at packaging time',()=>{
+  const windows=JSON.parse(fs.readFileSync(path.join(tauri,'build-windows.conf.json'),'utf8'));
+  assert.equal(windows.bundle.windows.nsis.template,'installer/components.nsi');
+  const executable=path.resolve(tauri,'target-test/release/giveaway-scout-cli.exe');
+  const overlay=windowsComponentsOverlay(executable);
+  assert.deepEqual(overlay.bundle.resources,{[executable]:'giveaway-scout-cli.exe'});
+  assert.equal(overlay.bundle.windows.nsis.template,windows.bundle.windows.nsis.template);
+  assert.equal(config.bundle.resources,undefined,'Plain cargo tests must not require a CLI payload');
+});
+
+test('component setup keeps GUI optional, CLI opt-in, safe process checks and preserved update selection',()=>{
+  const source=fs.readFileSync(path.join(tauri,'installer/components.nsi'),'utf8');
+  assert.equal(verifyComponentInstallerScript(source).cliDefault,false);
+  for(const mutated of [
+    source.replace('Section /o "$(ScoutCliComponent)" SEC_CLI','Section "$(ScoutCliComponent)" SEC_CLI'),
+    source.replace('Call ScoutValidateComponents','; removed validation'),
+    source.replace('Call ScoutCheckProfile','; removed profile preflight'),
+    source.replace('Call ScoutCheckProcesses','!insertmacro CheckIfAppIsRunning "$INSTDIR\\giveaway-scout.exe" "Scout"'),
+    source.replace('QueryFullProcessImageNameW','UncheckedParent'),
+    source.replace('Call un.ScoutMaintainInstallation','; removed PATH/autostart cleanup'),
+  ]) assert.throws(()=>verifyComponentInstallerScript(mutated));
+});
+
+test('component page keeps names wide and binds both hover descriptions after section declarations',()=>{
+  const source=fs.readFileSync(path.join(tauri,'installer/components.nsi'),'utf8');
+  const result=verifyComponentInstallerScript(source);
+  assert.equal(result.wideComponentList,true);
+  assert.equal(result.componentHoverDescriptions,true);
+  assert.equal(result.readableDescriptionStates,true);
+  const layout='!define MUI_COMPONENTSPAGE_SMALLDESC';
+  const block=source.match(/^!insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN\r?\n[\s\S]*?^!insertmacro MUI_FUNCTION_DESCRIPTION_END\r?\n/m)?.[0];
+  assert(block);
+  for(const mutated of [
+    source.replace(layout,''),
+    source.replace(layout,'')+'\n'+layout,
+    source.replace('!define MUI_COMPONENTSPAGE_TEXT_TOP "$(ScoutComponentsText)"',''),
+    source.replace('!define MUI_COMPONENTSPAGE_TEXT_COMPLIST "$(ScoutComponentsList)"',''),
+    source.replace('!define MUI_COMPONENTSPAGE_TEXT_DESCRIPTION_INFO "$(ScoutComponentsDescriptionInfo)"',''),
+    source.replace('!define MUI_PAGE_CUSTOMFUNCTION_SHOW ScoutComponentsShow',''),
+    source.replace('!define MUI_CUSTOMFUNCTION_ONMOUSEOVERSECTION ScoutDescriptionColors',''),
+    source.replace('!define MUI_CUSTOMFUNCTION_ONMOUSEOVERSECTION ScoutDescriptionColors','')+'\n!define MUI_CUSTOMFUNCTION_ONMOUSEOVERSECTION ScoutDescriptionColors\n',
+    source.replace('EnableWindow $mui.ComponentsPage.DescriptionText 1','EnableWindow $mui.ComponentsPage.DescriptionText 0'),
+    source.replace('"666666" "F0F0F0"','"FFFFFF" "F0F0F0"'),
+    source.replace("System::Call 'user32::InvalidateRect(p $mui.ComponentsPage.DescriptionText, p0, i1)'",''),
+    source.replace(block,''),
+    source.replace('MUI_DESCRIPTION_TEXT ${SEC_GUI} "$(ScoutGuiDescription)"','MUI_DESCRIPTION_TEXT ${SEC_CLI} "$(ScoutGuiDescription)"'),
+    source.replace('MUI_DESCRIPTION_TEXT ${SEC_CLI} "$(ScoutCliDescription)"','MUI_DESCRIPTION_TEXT ${SEC_CLI} "$(UnknownDescription)"'),
+    block+source.replace(block,''),
+  ]) assert.throws(()=>verifyComponentInstallerScript(mutated));
+});
+
+test('component instructions and descriptions are localized and Russian uses guillemets',()=>{
+  const hooks=fs.readFileSync(path.join(tauri,nsis.installerHooks),'utf8');
+  assert.equal(verifyComponentInstallerTranslations(hooks).localizedComponentInstructions,true);
+  assert.match(hooks,/^LangString ScoutGuiComponent 1049 "Графическое приложение"\r?$/m);
+  assert.match(hooks,/^LangString ScoutCliComponent 1049 "Консольное приложение"\r?$/m);
+  for(const mutated of [
+    hooks.replace(/^LangString ScoutGuiDescription 1033 .*\r?$/m,''),
+    hooks.replace(/^LangString ScoutCliDescription 1049 .*\r?$/m,''),
+    hooks.replace(/^LangString ScoutComponentsDescriptionInfo 1049 .*\r?$/m,''),
+    hooks.replace(/^LangString ScoutComponentsText 1049 .*$/m,line=>line.replace('«Далее»',String.raw`$\"Далее$\"`)),
+    hooks.replace(/^(LangString ScoutComponentsText 1049 .*)«Далее»/m,'$1Далее'),
+  ]) assert.throws(()=>verifyComponentInstallerTranslations(mutated));
 });
 
 test('setup and uninstaller use the existing multi-resolution app ICO',()=>{

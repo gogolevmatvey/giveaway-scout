@@ -28,6 +28,39 @@ fn parses_public_period_configuration_without_using_task_games_as_rewards_or_url
 }
 
 #[test]
+fn preserves_active_period_order_without_sorting_identifiers_or_deadlines() {
+    let mut first = period("opaque-middle");
+    first["period_name"] = json!("First on page");
+    first["deadline"] = json!("2098-01-01T00:00:00Z");
+    let mut expired = period("expired");
+    expired["is_expired"] = json!(true);
+    let mut second = period("opaque-z");
+    second["period_name"] = json!("Second on page");
+    second["deadline"] = json!("2099-01-01T00:00:00Z");
+    let mut future = period("future");
+    future["is_not_started"] = json!(true);
+    let mut third = period("opaque-a");
+    third["period_name"] = json!("Third on page");
+    third["deadline"] = json!("2097-01-01T00:00:00Z");
+    let mut sold_out = period("sold-out");
+    sold_out["stock_count"] = json!(0);
+
+    let items = parse_zeros(&feed(vec![first, expired, second, future, third, sold_out])).unwrap();
+
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| (item.source_id.as_str(), item.title.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("opaque-middle", "First on page"),
+            ("opaque-z", "Second on page"),
+            ("opaque-a", "Third on page"),
+        ]
+    );
+}
+
+#[test]
 fn ignores_expired_future_and_sold_out_periods_but_accepts_verified_empty_feed() {
     let mut expired = period("expired");
     expired["is_expired"] = json!(true);
@@ -216,13 +249,13 @@ async fn disabled_zeros_makes_no_request_and_invalid_or_rejected_data_defers_bas
     let mut db = Database::open_in_memory().unwrap();
     let fixture = Fixture(Err("one connection per IP"));
     assert!(
-        check_sources(&fixture, false, false, false)
+        check_sources(&fixture, false, false, false, false)
             .await
             .checked_sources
             .is_empty()
     );
     for fixture in [fixture, Fixture(Ok("{}".into()))] {
-        let result = check_sources(&fixture, false, false, true).await;
+        let result = check_sources(&fixture, false, false, true, false).await;
         assert_eq!(result.failures[0].source, GiveawaySource::Zeros);
         assert!(
             apply_source_check(&mut db, result)
@@ -234,7 +267,7 @@ async fn disabled_zeros_makes_no_request_and_invalid_or_rejected_data_defers_bas
                 .unwrap()
         );
     }
-    let result = check_sources(&Fixture(Ok(feed(vec![]))), false, false, true).await;
+    let result = check_sources(&Fixture(Ok(feed(vec![]))), false, false, true, false).await;
     assert!(result.failures.is_empty());
     apply_source_check(&mut db, result).unwrap();
     assert!(
@@ -251,6 +284,7 @@ async fn live_zeros_public_configuration_is_supported() {
         false,
         false,
         true,
+        false,
     )
     .await;
     assert!(result.failures.is_empty(), "{:?}", result.failures);

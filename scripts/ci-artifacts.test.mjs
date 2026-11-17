@@ -43,8 +43,8 @@ test('macOS requires ARM64 Mach-O; malformed binaries do not pass',()=>{
 });
 test('app/tool versions must be pinned and consistent',()=>{
   const pkg={version:'0.1.0',packageManager:'pnpm@12.10.1'};
-  const cargo='version = "0.1.0"\n'; const toolchain='channel = "1.99.1"\n';
-  assert.equal(requireVersions(pkg,{version:'0.1.0'},cargo,toolchain).rust,'1.99.1');
+  const cargo='version = "0.1.0"\nrust-version = "1.99.1"\n'; const toolchain='channel = "1.100.0"\n';
+  assert.equal(requireVersions(pkg,{version:'0.1.0'},cargo,toolchain).rust,'1.100.0');
   assert.throws(()=>requireVersions(pkg,{version:'0.2.0'},cargo,toolchain));
   assert.throws(()=>requireVersions({...pkg,packageManager:'pnpm@latest'},{version:'0.1.0'},cargo,toolchain));
 });
@@ -71,6 +71,7 @@ test('source ignore rules exclude local data and signing secrets but keep public
     assert.equal(initialized.status,0,initialized.stderr);
     const ignored=[
       'dist/win-x64/GiveawayScout.exe','release-staging/latest.json',
+      'Plan.md',
       'artifacts/internal/windows-x86_64/candidate.json',
       'private/profile/settings.json','giveaway-scout.db','giveaway-scout.db-wal',
       'giveaway-scout.db.corrupt-test.backup','profile.sqlite3',
@@ -78,14 +79,17 @@ test('source ignore rules exclude local data and signing secrets but keep public
       'updater.key.enc','windows.pfx','apple.p12','signing.pem',
       'src/GiveawayScout.Desktop/node_modules/example/package.json',
       'src/GiveawayScout.Desktop/src-tauri/target-windows-x64-next/release/giveaway-scout.exe',
+      'src/GiveawayScout.Desktop/src-tauri/target-windows-x64-next/release/giveaway-scout-cli.exe',
+      'src/GiveawayScout.Desktop/src-tauri/target-installer-tests/release/giveaway-scout-cli.exe',
     ];
     const included=[
-      'README.md','Plan.md','.env.example','updater.pub',
+      'README.md','.env.example','updater.pub',
       'src/GiveawayScout.Desktop/src/App.tsx',
       'src/GiveawayScout.Desktop/src-tauri/Cargo.lock',
       'src/GiveawayScout.Desktop/src-tauri/src/lib.rs',
       'src/GiveawayScout.Desktop/src-tauri/linux/com.giveawayscout.desktop.service',
       'src/GiveawayScout.Desktop/src-tauri/crates/giveaway-scout-notifications/src/lib.rs',
+      'src/GiveawayScout.Desktop/src-tauri/installer/components.nsi',
     ];
     for(const file of [...ignored,...included]) {
       const result=spawnSync('git',[

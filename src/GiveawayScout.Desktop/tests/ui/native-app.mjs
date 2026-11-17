@@ -36,7 +36,7 @@ export async function createProfile() {
 }
 
 export async function setScenario(root, scenario) {
-  if(!['baseline','newGiveaway','sourceFailure','zerosGiveaway','zerosConnectionLimit'].includes(scenario)) throw new Error('Unknown scenario');
+  if(!['baseline','newGiveaway','sourceFailure','gamesForFarmFailure','gamesForFarmEmpty','gamesForFarmInvalidFeed','zerosGiveaway','zerosConnectionLimit','orderFirst','orderSecond','freeSteamKeysGiveaway','freeSteamKeysFailure','crossSourceGiveaway','slowGivee','largeHistory','largeHistoryNew'].includes(scenario)) throw new Error('Unknown scenario');
   const pending = path.join(root,'scenario.next.json');
   await fs.writeFile(pending,JSON.stringify(scenario));
   await fs.rename(pending,path.join(root,'scenario.json'));
@@ -47,6 +47,14 @@ export async function readEvents(root) {
   catch(error) { if(error.code === 'ENOENT') return []; throw error; }
 }
 
+export async function armAttentionRace(root) {
+  const token = randomUUID();
+  const pending = path.join(root,'attention-race-arm.next.json');
+  await fs.writeFile(pending,JSON.stringify(token));
+  await fs.rename(pending,path.join(root,'attention-race-arm.json'));
+  return token;
+}
+
 async function freePort() {
   const server = net.createServer();
   await new Promise((resolve,reject) => {server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
@@ -55,9 +63,29 @@ async function freePort() {
   return port;
 }
 
+export async function connectWhenWindowReady(connect, assertAlive, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    assertAlive();
+    const remaining = Math.max(1, deadline - Date.now());
+    try { return await connect(remaining); }
+    catch(error) {
+      // The plugin starts /status before Tauri creates the WebView window.
+      // Only its explicit missing-window response is a startup readiness retry.
+      const knownWindowRace = /^(?:WebDriverError:\s*)?No window could be found\b/i.test(error?.message ?? '') ||
+        /^no such window\b/i.test(error?.message ?? '') || error?.error === 'no such window';
+      if (!knownWindowRace) throw error;
+      assertAlive();
+      if (Date.now() >= deadline) throw error;
+      await delay(Math.min(150, deadline - Date.now()));
+    }
+  }
+}
+
 export async function launchApp(root) {
   const executable = await verifiedArtifact();
   const port = await freePort();
+  const startedAt = Date.now();
   const child = spawn(executable,[],{
     env:{...process.env,GIVEAWAY_SCOUT_UI_ROOT:root,TAURI_WEBDRIVER_PORT:String(port),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--force-renderer-accessibility'},
     stdio:['ignore','pipe','pipe'],windowsHide:true,
@@ -68,6 +96,7 @@ export async function launchApp(root) {
   let spawnError;
   child.on('error',error => {spawnError=error;});
   let browser;
+  let sessionAttempts = 0;
   try {
     await waitUntil(async () => {
       if(spawnError) throw spawnError;
@@ -75,14 +104,32 @@ export async function launchApp(root) {
       try { return (await fetch(`http://127.0.0.1:${port}/status`,{signal:AbortSignal.timeout(500)})).ok; }
       catch { return false; }
     },'test app WebDriver startup',45_000);
-    browser = await remote({hostname:'127.0.0.1',port,path:'/',logLevel:'error',connectionRetryCount:0,connectionRetryTimeout:15_000,waitforTimeout:15_000,
-      capabilities:{browserName:'tauri','wdio:enforceWebDriverClassic':true}});
+    browser = await connectWhenWindowReady(remaining => {
+      sessionAttempts++;
+      return remote({hostname:'127.0.0.1',port,path:'/',logLevel:'error',connectionRetryCount:0,connectionRetryTimeout:remaining,waitforTimeout:15_000,
+        capabilities:{browserName:'tauri','wdio:enforceWebDriverClassic':true}});
+    }, () => {
+      if(spawnError) throw spawnError;
+      if(child.exitCode !== null || child.signalCode !== null) throw new Error(`Test app exited before window creation: ${log.slice(-5000)}`);
+    }, 45_000);
     await browser.$('.header-button').waitForEnabled();
     const identity=await browser.execute(() => window.__TAURI_INTERNALS__.invoke('get_ui_test_identity'));
     if(identity.processId!==child.pid || identity.profileId!==path.basename(root)) throw new Error('WebDriver connected to a different process or profile; refusing UI actions');
     const frontend = await browser.execute(() => ({title:document.title,app:document.querySelector('main')?.dataset.app}));
     if(frontend.title !== 'Giveaway Scout' || frontend.app !== 'giveaway-scout') throw new Error('Unexpected application frontend');
   } catch(error) {
+    const profileEntries = {};
+    for (const directory of ['data','logs','webview']) {
+      profileEntries[directory] = await Promise.all((await fs.readdir(path.join(root,directory)).catch(()=>[])).slice(0,25).map(async name=>{
+        const stat=await fs.stat(path.join(root,directory,name)).catch(()=>null);
+        return {name,sizeBytes:stat?.size,modifiedAtUtc:stat?.mtime.toISOString(),isDirectory:stat?.isDirectory()};
+      }));
+    }
+    await fs.writeFile(path.join(root,'startup-failure.json'),JSON.stringify({
+      processId:child.pid,port,elapsedMs:Date.now()-startedAt,sessionAttempts,
+      processAlive:child.exitCode===null&&child.signalCode===null,exitCode:child.exitCode,signalCode:child.signalCode,
+      errorName:error?.name,errorMessage:error?.message,profileEntries,
+    },null,2)+'\n');
     if(browser) await browser.deleteSession().catch(()=>{});
     if(child.exitCode === null && child.signalCode === null) {
       const exited=once(child,'exit');child.kill();await exited;

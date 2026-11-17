@@ -20,7 +20,7 @@ concurrency:
 env:
   NODE_VERSION: 24.21.0
   PNPM_VERSION: 12.10.1
-  RUST_VERSION: 1.99.1
+  RUST_VERSION: 1.100.0
   CARGO_BUILD_JOBS: 2
 
 jobs:
@@ -35,7 +35,7 @@ jobs:
         include: ${{ fromJSON(inputs.include_experimental && '[{"id":"windows-x86_64","runner":"windows-2025","target":"x86_64-pc-windows-msvc","arch":"x64","bundles":"nsis"},{"id":"windows-aarch64","runner":"windows-11-arm","target":"aarch64-pc-windows-msvc","arch":"arm64","bundles":"nsis"},{"id":"darwin-aarch64","runner":"macos-14","target":"aarch64-apple-darwin","arch":"arm64","bundles":"app,dmg"}]' || '[{"id":"windows-x86_64","runner":"windows-2025","target":"x86_64-pc-windows-msvc","arch":"x64","bundles":"nsis"}]') }}
     runs-on: ${{ matrix.runner }}
     env:
-      RUSTUP_TOOLCHAIN: 1.99.1-${{ matrix.target }}
+      RUSTUP_TOOLCHAIN: 1.100.0-${{ matrix.target }}
       CARGO_TARGET_DIR: ${{ github.workspace }}/src/GiveawayScout.Desktop/src-tauri/target-ci/${{ matrix.id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -75,10 +75,17 @@ jobs:
       - name: Strict Clippy
         working-directory: src/GiveawayScout.Desktop/src-tauri
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Standalone Windows x64 CLI and component payload
+        if: inputs.build_packages && matrix.id == 'windows-x86_64'
+        working-directory: src/GiveawayScout.Desktop/src-tauri
+        run: cargo build -p giveaway-scout-cli --release --locked
+      - name: Prepare optional GUI and CLI component setup
+        if: inputs.build_packages && matrix.id == 'windows-x86_64'
+        run: node scripts/prepare-windows-components.mjs
       - name: Internal packaging (not a signed public release)
         if: inputs.build_packages
         working-directory: src/GiveawayScout.Desktop
-        run: pnpm tauri build --bundles '${{ matrix.bundles }}' --config src-tauri/build-internal.conf.json -- --locked
+        run: pnpm tauri build --bundles '${{ matrix.bundles }}' --config src-tauri/build-internal.conf.json ${{ matrix.id == 'windows-x86_64' && '--config src-tauri/target-ci/windows-x86_64/components-bundle.conf.json' || '' }} -- --locked
       - name: Check Windows x64 installer languages and resources
         if: inputs.build_packages && matrix.id == 'windows-x86_64'
         run: node scripts/check-installer-bundle.mjs
@@ -110,9 +117,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     # Official multi-arch Rust image; native CPU, Debian 12/GLIBC 2.36.
     container:
-      image: rust:1.99.1-bookworm@sha256:e12566d5abc17a0da741628782cdb504b68b8961f5bfcf677936bf3e8b32de29
+      image: rust:1.100.0-bookworm@sha256:ade39a710ef85f3506cffcfec3e8a24ba090badef1dff2fb798f71d878833fea
     env:
-      RUSTUP_TOOLCHAIN: 1.99.1-${{ matrix.target }}
+      RUSTUP_TOOLCHAIN: 1.100.0-${{ matrix.target }}
       CARGO_TARGET_DIR: ${{ github.workspace }}/src/GiveawayScout.Desktop/src-tauri/target-ci/${{ matrix.id }}
       APPIMAGE_EXTRACT_AND_RUN: 1
     steps:

@@ -1,24 +1,34 @@
+pub mod campaign_identity;
 pub mod delivery;
 pub mod models;
 pub mod monitoring;
+pub mod redirects;
 pub mod sources;
 pub mod storage;
+
+pub use campaign_identity::{
+    CampaignIdentity, identify_campaign, is_free_steam_keys_redirect, known_destination,
+};
 
 use serde::Serialize;
 
 pub use delivery::{DeliveryError, DeliveryReport, dispatch_pending_notifications};
 
 pub use models::{
-    AppSettings, DataCounts, DiscoveryResult, GameStore, GiveawayItem, GiveawayKind,
-    GiveawaySource, InitialSyncMode, NotificationRecord,
+    AppSettings, AutostartTarget, DataCounts, DiscoveryResult, GameStore, GiveawayItem,
+    GiveawayKind, GiveawaySource, InitialSyncMode, NotificationRecord, SourceCheckIntervals,
+    SourcePhase, SourceStatus,
 };
 pub use monitoring::{
     HttpPageFetcher, MonitoringOutcome, PageFetchError, PageFetcher, SourceCheckResult,
-    SourceFailure, SourceFailureReason, apply_source_check, check_sources,
+    SourceFailure, SourceFailureReason, apply_source_check, check_source, check_sources,
+};
+pub use redirects::{
+    HttpRedirectTransport, OriginResolveError, OriginResolver, RedirectResponse, RedirectTransport,
 };
 pub use sources::{
-    GAMES_FOR_FARM_FEED_URL, GIVEE_CLUB_FEED_URL, SourceParseError, ZEROS_FEED_URL,
-    parse_games_for_farm, parse_givee_club, parse_zeros,
+    FREE_STEAM_KEYS_FEED_URL, GAMES_FOR_FARM_FEED_URL, GIVEE_CLUB_FEED_URL, SourceParseError,
+    ZEROS_FEED_URL, parse_free_steam_keys, parse_games_for_farm, parse_givee_club, parse_zeros,
 };
 pub use storage::{Database, DatabaseRecoveryReport, StorageError};
 

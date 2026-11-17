@@ -52,7 +52,13 @@ fn v6_profile(path: &std::path::Path, close: bool, autostart: bool) {
     let connection = Connection::open(path).unwrap();
     connection.execute_batch(
         "ALTER TABLE settings DROP COLUMN start_in_tray;
-         DELETE FROM schema_migrations WHERE version = 7;
+         DELETE FROM schema_migrations WHERE version IN (7,13);
+         DROP TABLE notification_campaigns;
+         DROP TABLE campaign_members;
+         DROP TABLE campaigns;
+         DROP TABLE redirect_cache;
+         DROP TABLE source_status;
+         DROP TABLE source_initial_policy;
          INSERT INTO tracked_giveaways VALUES ('GiveeClub:event/42','giveeClub','event/42','Saved game','2026-10-20T00:00:00Z');
          INSERT INTO notification_history(id,tracking_key,source,kind,title,url,received_at_utc,read_at_utc,delivery_state,delivery_attempts,last_delivery_error)
          VALUES ('11111111-1111-4111-8111-111111111111','GiveeClub:event/42','giveeClub','giveaway','Saved game','https://givee.club/event/42','2026-10-20T00:00:00Z','2026-10-20T01:00:00Z','pending',3,'Saved delivery error');

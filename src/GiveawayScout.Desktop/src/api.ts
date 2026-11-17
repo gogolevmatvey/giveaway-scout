@@ -40,21 +40,56 @@ export interface AppState {
 
 export interface AppSettings {
   checkIntervalMinutes: number;
+  sourceCheckIntervals: SourceCheckIntervals;
   httpTimeoutSeconds: number;
   httpRetryCount: number;
   giveeClubEnabled: boolean;
   gamesForFarmEnabled: boolean;
   zerosEnabled: boolean;
+  freeSteamKeysEnabled: boolean;
   steamNotificationsEnabled: boolean;
   epicGamesNotificationsEnabled: boolean;
   gogNotificationsEnabled: boolean;
   notificationSoundEnabled: boolean;
   startAtLogin: boolean;
+  autostartTarget: "gui" | "cli";
   startInTray: boolean;
   keepRunningInTray: boolean;
   languageCode: "ru" | "en" | null;
   verboseLogging: boolean;
+  logMaxFileSizeMb: number;
+  logFileCount: number;
+  logDirectory: string | null;
   initialSyncMode: InitialSyncMode | null;
+}
+
+export interface LoggingPolicy {
+  maxFileSizeMb: number;
+  fileCount: number;
+  directory: string | null;
+}
+
+export interface LoggingSnapshot {
+  requestedAtStartup: LoggingPolicy;
+  effectiveDirectory: string | null;
+  activeFilePath: string | null;
+  maxFileSizeMb: number;
+  fileCount: number;
+  restartRequired: boolean;
+  lastError: string | null;
+  usingFallback: boolean;
+}
+
+export function getLoggingState(): Promise<LoggingSnapshot> {
+  return invoke<LoggingSnapshot>("get_logging_state");
+}
+
+export function chooseLogDirectory(): Promise<string | null> {
+  return invoke<string | null>("choose_log_directory");
+}
+
+export function openLogDirectory(): Promise<void> {
+  return invoke<void>("open_log_directory");
 }
 
 export type InitialSyncMode = "silent" | "notifyCurrent";
@@ -88,10 +123,32 @@ export interface MonitorSnapshot {
   lastNewItems: number;
   lastFailureCount: number;
   sourceFailures: SourceFailure[];
+  sourceStates: SourceStatus[];
+}
+
+export type GiveawaySource = "giveeClub" | "gamesForFarm" | "zeros" | "freeSteamKeys";
+export type SourceCheckIntervals = Record<GiveawaySource, number>;
+export type SourcePhase = "disabled" | "waiting" | "checking" | "ok" | "error";
+
+export interface SourceStatus {
+  source: GiveawaySource;
+  phase: SourcePhase;
+  lastStartedAtUtc: string | null;
+  lastCompletedAtUtc: string | null;
+  lastSuccessfulCheckUtc: string | null;
+  nextCheckAtUtc: string | null;
+  lastError: SourceFailure | null;
+  lastNewItems: number;
+  unresolvedLinks: number;
+}
+
+export interface CheckStartResult {
+  startedSources: GiveawaySource[];
+  alreadyRunningSources: GiveawaySource[];
 }
 
 export interface GiveawayItem {
-  source: "giveeClub" | "gamesForFarm" | "zeros";
+  source: GiveawaySource;
   sourceId: string;
   title: string;
   url: string;
@@ -101,7 +158,7 @@ export interface GiveawayItem {
 }
 
 export interface SourceFailure {
-  source: "giveeClub" | "gamesForFarm" | "zeros";
+  source: GiveawaySource;
   message: string;
   reason:
     | { code: "unknown" | "timeout" | "connection" | "invalidFeed" | "zerosConnectionLimit" }
@@ -121,6 +178,10 @@ export interface NotificationRecord {
   id: string;
   trackingKey: string | null;
   source: string;
+  campaignId?: string | null;
+  originSource?: GiveawaySource | null;
+  originName?: string | null;
+  detectedSources?: GiveawaySource[];
   kind: string;
   title: string;
   url: string;
@@ -129,6 +190,15 @@ export interface NotificationRecord {
   deliveryState: string;
   deliveryAttempts: number;
   lastDeliveryError: string | null;
+}
+
+export interface NotificationHistoryPage {
+  items: NotificationRecord[];
+  nextCursor: string | null;
+}
+
+export function getNotificationHistoryPage(cursor: string | null = null): Promise<NotificationHistoryPage> {
+  return invoke<NotificationHistoryPage>("get_notification_history_page", { cursor });
 }
 
 export function getAppState(): Promise<AppState> {
@@ -147,8 +217,8 @@ export function clearGiveawayData(): Promise<void> {
   return invoke<void>("clear_giveaway_data");
 }
 
-export function checkNow(): Promise<MonitoringOutcome> {
-  return invoke<MonitoringOutcome>("check_now");
+export function checkNow(): Promise<CheckStartResult> {
+  return invoke<CheckStartResult>("check_now");
 }
 
 export function getNotificationHistory(): Promise<NotificationRecord[]> {
@@ -161,6 +231,10 @@ export function openNotification(notificationId: string): Promise<void> {
 
 export function markAllNotificationsRead(): Promise<number> {
   return invoke<number>("mark_all_notifications_read");
+}
+
+export function markNotificationRead(notificationId: string): Promise<void> {
+  return invoke<void>("mark_notification_read", { notificationId });
 }
 
 export function sendTestNotification(): Promise<void> {

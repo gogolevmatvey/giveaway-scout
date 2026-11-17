@@ -1,7 +1,9 @@
+mod free_steam_keys;
 mod games_for_farm;
 mod givee_club;
 mod zeros;
 
+pub use free_steam_keys::{FREE_STEAM_KEYS_FEED_URL, parse_free_steam_keys};
 pub use games_for_farm::{GAMES_FOR_FARM_FEED_URL, parse_games_for_farm};
 pub use givee_club::{GIVEE_CLUB_FEED_URL, parse_givee_club};
 pub(crate) use zeros::fetch_zeros;

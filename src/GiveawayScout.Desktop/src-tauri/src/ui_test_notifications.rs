@@ -1,5 +1,8 @@
 pub use giveaway_scout_notifications::NotificationRequest;
 
+// This adapter replaces native transport in UI tests; production still uses notify-rust.
+use notify_rust as _;
+
 pub fn show(
     _app: &tauri::AppHandle,
     request: &NotificationRequest,

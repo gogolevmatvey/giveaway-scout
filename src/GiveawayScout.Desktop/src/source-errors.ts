@@ -1,7 +1,7 @@
 import type { TFunction } from "i18next";
 import type { SourceFailure } from "./api";
 
-/** Never translate/parse diagnostic strings or expose them as user messages. */
+/** Translate the stable category without guessing from transport diagnostics. */
 export function sourceFailureText(failure: SourceFailure, t: TFunction): string {
   let description: string;
   switch (failure.reason?.code) {
@@ -18,12 +18,13 @@ export function sourceFailureText(failure: SourceFailure, t: TFunction): string 
     }
     default: description = t("sourceErrorUnknown");
   }
-  return `${sourceName(failure.source)}: ${description}`;
+  return description;
 }
 
 export function sourceName(source: string): string {
   if (source === "giveeClub" || source === "GiveeClub") return "Givee Club";
   if (source === "gamesForFarm" || source === "GamesForFarm") return "Games for Farm";
   if (source === "zeros" || source === "Zeros") return "Zeros";
+  if (source === "freeSteamKeys" || source === "FreeSteamKeys") return "FreeSteamKeys";
   return source;
 }

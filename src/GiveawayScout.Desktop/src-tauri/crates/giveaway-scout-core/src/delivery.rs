@@ -5,7 +5,8 @@ use thiserror::Error;
 
 use crate::{AppSettings, Database, NotificationRecord, StorageError};
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeliveryReport {
     pub attempted: u64,
     pub delivered: u64,

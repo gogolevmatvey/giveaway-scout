@@ -4,27 +4,13 @@
 #![cfg_attr(feature = "ui-tests", allow(dead_code))]
 use std::path::Path;
 
-pub(crate) fn is_current_installation(app: &tauri::AppHandle) -> bool {
+pub(crate) fn is_current_installation(_app: &tauri::AppHandle) -> bool {
     let Ok(executable) = std::env::current_exe() else {
         return false;
     };
-    let key_path = format!(
-        r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{}",
-        app.config()
-            .product_name
-            .as_deref()
-            .unwrap_or("Giveaway Scout")
-    );
     // Build-output EXEs contain a bundle marker too. Require the real NSIS
     // installation entry and this exact executable, not any installed copy.
-    [
-        windows_registry::CURRENT_USER,
-        windows_registry::LOCAL_MACHINE,
-    ]
-    .into_iter()
-    .filter_map(|root| root.open(&key_path).ok())
-    .filter_map(|key| key.get_string("InstallLocation").ok())
-    .any(|directory| matches_installation(&executable, &directory))
+    giveaway_scout_platform::is_current_installation(&executable)
 }
 
 pub(crate) fn notification_protocol_available(app: &tauri::AppHandle) -> bool {
@@ -44,12 +30,10 @@ pub(crate) fn notification_protocol_available(app: &tauri::AppHandle) -> bool {
 }
 
 fn same_executable(current: &Path, registered: &Path) -> bool {
-    match (current.canonicalize(), registered.canonicalize()) {
-        (Ok(current), Ok(registered)) => current == registered,
-        _ => false,
-    }
+    giveaway_scout_platform::same_executable(current, registered)
 }
 
+#[cfg(test)]
 fn matches_installation(executable: &Path, directory: &str) -> bool {
     same_executable(
         executable,

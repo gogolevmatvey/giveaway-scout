@@ -1,5 +1,12 @@
 {
   "build": {
     "beforeBuildCommand": ""
+  },
+  "bundle": {
+    "windows": {
+      "nsis": {
+        "template": "installer/components.nsi"
+      }
+    }
   }
 }

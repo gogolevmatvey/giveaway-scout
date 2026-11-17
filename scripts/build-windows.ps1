@@ -24,12 +24,13 @@ if ($BuildLabel) {
 }
 $targetDirectory = Join-Path $tauriDirectory $targetDirectoryName
 $releaseExecutable = Join-Path $targetDirectory "release\giveaway-scout.exe"
+$cliExecutable = Join-Path $targetDirectory "release\giveaway-scout-cli.exe"
 
 if (-not $CheckOnly) {
-    $runningCopies = Get-CimInstance Win32_Process -Filter "Name = 'giveaway-scout.exe'" |
-        Where-Object { $_.ExecutablePath -eq $releaseExecutable }
+    $runningCopies = Get-CimInstance Win32_Process -Filter "Name = 'giveaway-scout.exe' OR Name = 'giveaway-scout-cli.exe'" |
+        Where-Object { $_.ExecutablePath -in @($releaseExecutable, $cliExecutable) }
     if ($runningCopies) {
-        throw "Cannot replace the running executable: $releaseExecutable. Quit Giveaway Scout from the tray, or build into another directory with -BuildLabel next. Use -CheckOnly to run checks without replacing the EXE."
+        throw "Cannot replace a running GUI/CLI executable in $targetDirectory. Quit Giveaway Scout from the tray or stop watch with Ctrl+C, or use another -BuildLabel. Use -CheckOnly to run checks without replacing EXEs."
     }
 }
 $frontendBin = Join-Path $desktopDirectory "node_modules\.bin"
@@ -201,18 +202,46 @@ if ($CheckOnly) {
     exit 0
 }
 
-Write-Host "Building the NSIS installer..."
+Write-Host "Building the Windows console application..."
+$previousReleaseConfig = $env:GIVEAWAY_SCOUT_RELEASE_CONFIG
+try {
+    if ($UpdaterConfig) {
+        $env:GIVEAWAY_SCOUT_RELEASE_CONFIG = $UpdaterConfig
+    }
+    else {
+        Remove-Item Env:GIVEAWAY_SCOUT_RELEASE_CONFIG -ErrorAction SilentlyContinue
+    }
+    Invoke-CheckedProcess -FilePath $cargo -ProcessArguments @(
+        "build", "-p", "giveaway-scout-cli", "--release", "--locked"
+    ) -WorkingDirectory $tauriDirectory
+}
+finally {
+    if ($null -eq $previousReleaseConfig) {
+        Remove-Item Env:GIVEAWAY_SCOUT_RELEASE_CONFIG -ErrorAction SilentlyContinue
+    }
+    else {
+        $env:GIVEAWAY_SCOUT_RELEASE_CONFIG = $previousReleaseConfig
+    }
+}
+Invoke-CheckedProcess -FilePath $node -ProcessArguments @(
+    (Join-Path $PSScriptRoot "prepare-windows-components.mjs")
+) -WorkingDirectory $desktopDirectory
+$componentsConfig = Join-Path $targetDirectory "components-bundle.conf.json"
+
+Write-Host "Building the NSIS component installer..."
 $tauriArguments = @(".\node_modules\@tauri-apps\cli\tauri.js", "build", "--bundles", "nsis", "--config", "src-tauri\build-windows.conf.json")
 if ($UpdaterConfig) { $tauriArguments += @("--config", $UpdaterConfig) }
 if ($DeferUpdaterSigning) {
     $tauriArguments += @("--config", (Join-Path $tauriDirectory "build-deferred-signing.conf.json"))
 }
+$tauriArguments += @("--config", $componentsConfig)
 $tauriArguments += @("--", "--locked")
 Invoke-CheckedProcess -FilePath $node -ProcessArguments $tauriArguments -WorkingDirectory $desktopDirectory
 Invoke-CheckedProcess -FilePath $node -ProcessArguments @(
     (Join-Path $PSScriptRoot "check-installer-bundle.mjs")
 ) -WorkingDirectory $desktopDirectory
 Write-Host "Portable executable: $releaseExecutable"
+Write-Host "Console executable: $cliExecutable"
 Write-Host "NSIS installer directory: $(Join-Path $targetDirectory 'release\bundle\nsis')"
 if ($DeferUpdaterSigning) {
     Write-Host "Updater channel is included, but the installer still needs its updater signature before publication."

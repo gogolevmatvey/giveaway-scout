@@ -4,6 +4,7 @@
 /target-windows-x64/
 /target-windows-x64-*/
 /target-ci/
+/target-installer-tests/
 /target-linux-*/
 /target-macos-*/
 

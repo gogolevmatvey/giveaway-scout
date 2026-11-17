@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import {
   AlertTriangle,
   Bell,
   Check,
-  Clock3,
   HardDrive,
   History,
   LoaderCircle,
@@ -18,50 +17,52 @@ import { useTranslation } from "react-i18next";
 import {
   type AppSettings,
   type InitialSyncMode,
+  type SourceCheckIntervals,
   checkNow,
   checkForUpdates,
   clearGiveawayData,
+  chooseLogDirectory,
   getAppState,
-  getNotificationHistory,
+  getLoggingState,
+  getNotificationHistoryPage,
   getStorageSnapshot,
   getUpdateState,
   installUpdate,
   markAllNotificationsRead,
+  markNotificationRead,
   notificationErrorKey,
   openNotification,
+  openLogDirectory,
   sendTestNotification,
   updateSettings,
 } from "./api";
 import "./App.css";
-import { sourceFailureText, sourceName } from "./source-errors";
-import { settingsHaveChanges } from "./settings-draft";
+import { sourceFailureText } from "./source-errors";
+import { Select } from "./components/Select";
+import { SettingCard } from "./components/SettingCard";
+import { VirtualHistoryList } from "./components/VirtualHistoryList";
+import { notificationDetectorNames, notificationOriginName, sourceCatalog as sources } from "./history";
+import { intervalDraft, isIntegerInRange, settingsHaveChanges } from "./settings-draft";
 
-const sources = [
-  {
-    name: "Givee Club",
-    settingKey: "giveeClubEnabled",
-  },
-  {
-    name: "Games for Farm",
-    settingKey: "gamesForFarmEnabled",
-  },
-  {
-    name: "Zeros",
-    descriptionKey: "zerosDescription",
-    settingKey: "zerosEnabled",
-  },
-] as const;
+const settingsSections = ["sources", "notifications", "application", "network", "diagnostics", "updatesData"] as const;
+type SettingsSection = (typeof settingsSections)[number];
 
 function App() {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [historySubscribed, setHistorySubscribed] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("sources");
+  const [technicalDetailsOpen, setTechnicalDetailsOpen] = useState(false);
+  const [settingToFocus, setSettingToFocus] = useState<string | null>(null);
   const [settingsDraft, setSettingsDraft] = useState<AppSettings | null>(null);
   const [settingsBaseline, setSettingsBaseline] = useState<AppSettings | null>(null);
   const [confirmSettingsClose, setConfirmSettingsClose] = useState(false);
-  const [intervalValue, setIntervalValue] = useState("15");
+  const [intervalValues, setIntervalValues] = useState(intervalDraft);
   const [httpTimeoutValue, setHttpTimeoutValue] = useState("30");
   const [httpRetryValue, setHttpRetryValue] = useState("2");
+  const [logSizeValue, setLogSizeValue] = useState("2");
+  const [logFilesValue, setLogFilesValue] = useState("1");
   const [firstLaunchMode, setFirstLaunchMode] = useState<InitialSyncMode>("silent");
   const appState = useQuery({
     queryKey: ["app-state"],
@@ -72,12 +73,29 @@ function App() {
     queryFn: getStorageSnapshot,
     refetchInterval: 3_000,
   });
-  const notificationHistory = useQuery({
-    queryKey: ["notification-history"],
-    queryFn: getNotificationHistory,
-    refetchInterval: 3_000,
+  const notificationHistory = useInfiniteQuery({
+    queryKey: ["notification-history-pages"],
+    queryFn: ({ pageParam }) => getNotificationHistoryPage(pageParam),
+    initialPageParam: null as string | null,
+    enabled: historySubscribed,
+    getNextPageParam: (lastPage, _pages, _pageParam, pageParams) =>
+      lastPage.nextCursor && !pageParams.includes(lastPage.nextCursor) ? lastPage.nextCursor : undefined,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
   const updates = useQuery({ queryKey: ["updates"], queryFn: getUpdateState, refetchInterval: 1_000 });
+  const logging = useQuery({
+    queryKey: ["logging"], queryFn: getLoggingState,
+    refetchInterval: 3_000,
+  });
+  const chooseLogDirectoryMutation = useMutation({
+    mutationFn: chooseLogDirectory,
+    onSuccess: directory => {
+      if (directory !== null) setSettingsDraft(draft => draft ? {...draft, logDirectory: directory} : draft);
+    },
+  });
+  const openLogDirectoryMutation = useMutation({ mutationFn: openLogDirectory });
   const checkUpdatesMutation = useMutation({ mutationFn: checkForUpdates, onSettled: () => updates.refetch() });
   const installUpdateMutation = useMutation({ mutationFn: installUpdate, onSettled: () => updates.refetch() });
   const updatePhase = updates.data?.phase;
@@ -92,6 +110,12 @@ function App() {
   });
   const openNotificationMutation = useMutation({
     mutationFn: openNotification,
+    onSuccess: async () => {
+      await Promise.all([notificationHistory.refetch(), storageState.refetch()]);
+    },
+  });
+  const markReadMutation = useMutation({
+    mutationFn: markNotificationRead,
     onSuccess: async () => {
       await Promise.all([notificationHistory.refetch(), storageState.refetch()]);
     },
@@ -116,7 +140,7 @@ function App() {
     onSuccess: async (_, settings) => {
       await i18n.changeLanguage(settings.languageCode ?? detectedLanguage());
       document.documentElement.lang = i18n.language;
-      await storageState.refetch();
+      await Promise.all([storageState.refetch(), logging.refetch()]);
       setSettingsOpen(false);
     },
   });
@@ -133,20 +157,31 @@ function App() {
   const clearDataMutation = useMutation({
     mutationFn: clearGiveawayData,
     onSuccess: async () => {
-      await Promise.all([notificationHistory.refetch(), storageState.refetch()]);
+      await Promise.all([queryClient.resetQueries({ queryKey: ["notification-history-pages"] }), storageState.refetch()]);
     },
   });
-  const hasStatusError =
-    appState.isError || storageState.isError ||
-    Boolean(storageState.data?.monitor.lastError);
-  const sourceFailures = storageState.data?.monitor.sourceFailures ?? [];
+  const sourceStates = storageState.data?.monitor.sourceStates ?? [];
+  const sourceFailures = sourceStates.length
+    ? sourceStates.filter(state => state.phase !== "disabled" && state.lastError).flatMap(state => state.lastError ? [state.lastError] : [])
+    : storageState.data?.monitor.sourceFailures ?? [];
+  const hasStatusError = appState.isError || storageState.isError || sourceFailures.length > 0 ||
+    (!sourceStates.length && Boolean(storageState.data?.monitor.lastError));
+  const history = useMemo(() => {
+    const seen = new Set<string>();
+    return (notificationHistory.data?.pages ?? []).flatMap(page => page.items).filter(record => {
+      if (seen.has(record.id)) return false;
+      seen.add(record.id); return true;
+    });
+  }, [notificationHistory.data]);
+  const loadMoreHistory = useCallback(() => notificationHistory.fetchNextPage({ cancelRefetch: false }), [notificationHistory.fetchNextPage]);
+  const retryHistory = useCallback(() => notificationHistory.isFetchNextPageError ? loadMoreHistory() : notificationHistory.refetch(),
+    [notificationHistory.isFetchNextPageError, loadMoreHistory, notificationHistory.refetch]);
   const isChecking = Boolean(storageState.data?.monitor.isChecking);
-  const clearBlockedByCheck = isChecking || checkMutation.isPending || updateInstalling;
+  const clearDataBlocked = checkMutation.isPending || updateInstalling;
   const isDevelopment = Boolean(appState.data?.isDevelopment);
 
-  const intervalMinutes = Number(intervalValue);
-  const intervalIsValid =
-    Number.isInteger(intervalMinutes) && intervalMinutes >= 5 && intervalMinutes <= 1_440;
+  const invalidIntervalSource = sources.find(({ source }) => !isIntegerInRange(intervalValues[source], 5, 1_440));
+  const intervalsAreValid = !invalidIntervalSource;
   const httpTimeoutSeconds = Number(httpTimeoutValue);
   const httpTimeoutIsValid =
     Number.isInteger(httpTimeoutSeconds) &&
@@ -156,15 +191,45 @@ function App() {
   const httpRetryIsValid =
     httpRetryValue.trim() !== "" &&
     Number.isInteger(httpRetryCount) && httpRetryCount >= 0 && httpRetryCount <= 5;
-  const settingsAreValid = intervalIsValid && httpTimeoutIsValid && httpRetryIsValid;
+  const logSizeIsValid = isIntegerInRange(logSizeValue, 1, 100);
+  const logFilesIsValid = isIntegerInRange(logFilesValue, 1, 10);
+  const settingsAreValid = intervalsAreValid && httpTimeoutIsValid && httpRetryIsValid && logSizeIsValid && logFilesIsValid;
   const settingsDirty = settingsHaveChanges(settingsBaseline, settingsDraft, {
-    interval: intervalValue, timeout: httpTimeoutValue, retries: httpRetryValue,
+    intervals: intervalValues, timeout: httpTimeoutValue, retries: httpRetryValue,
+    logSize: logSizeValue, logFiles: logFilesValue,
   });
+  const firstInvalidSetting = invalidIntervalSource ? [`check-interval-${invalidIntervalSource.source}`, "intervalError"] :
+    !httpTimeoutIsValid ? ["http-timeout", "httpTimeoutError"] :
+    !httpRetryIsValid ? ["http-retries", "httpRetryError"] :
+    !logSizeIsValid ? ["log-file-size", "logFileSizeError"] : ["log-file-count", "logFileCountError"];
+  const settingsLocked = updateSettingsMutation.isPending || chooseLogDirectoryMutation.isPending;
+  const selectSettingsSection = (section: SettingsSection) => {
+    if (settingsLocked) return;
+    setSettingsSection(section);
+  };
+  const onSettingsNavigationKey = (event: ReactKeyboardEvent<HTMLButtonElement>, section: SettingsSection) => {
+    const index = settingsSections.indexOf(section);
+    const next = event.key === "Home" ? 0 : event.key === "End" ? settingsSections.length - 1 :
+      event.key === "ArrowDown" ? (index + 1) % settingsSections.length :
+      event.key === "ArrowUp" ? (index + settingsSections.length - 1) % settingsSections.length : null;
+    if (next === null || settingsLocked || event.ctrlKey || event.metaKey || event.altKey) return;
+    event.preventDefault();
+    setSettingsSection(settingsSections[next]);
+    document.getElementById(`settings-tab-${settingsSections[next]}`)?.focus();
+  };
+  const focusInvalidSetting = () => {
+    if (settingsLocked) return;
+    const id = firstInvalidSetting[0];
+    const section: SettingsSection = id.startsWith("check-interval-") ? "sources" : id.startsWith("http-") ? "network" : "diagnostics";
+    setSettingsSection(section);
+    if (section === "diagnostics") setTechnicalDetailsOpen(true);
+    setSettingToFocus(id);
+  };
   const requestCloseSettings = useCallback(() => {
-    if (updateSettingsMutation.isPending) return;
+    if (updateSettingsMutation.isPending || chooseLogDirectoryMutation.isPending) return;
     if (settingsDirty) setConfirmSettingsClose(true);
     else setSettingsOpen(false);
-  }, [settingsDirty, updateSettingsMutation.isPending]);
+  }, [settingsDirty, updateSettingsMutation.isPending, chooseLogDirectoryMutation.isPending]);
 
   useEffect(() => {
     const language = storageState.data?.settings.languageCode;
@@ -175,22 +240,43 @@ function App() {
   }, [i18n, storageState.data?.settings.languageCode]);
 
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    void listen("history-changed", () => {
-      void Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["notification-history"] }),
-        queryClient.invalidateQueries({ queryKey: ["storage-snapshot"] }),
-      ]);
-    }).then((stopListening) => {
-      unlisten = stopListening;
-    });
-    return () => unlisten?.();
+    let disposed = false;
+    const unlisteners: (() => void)[] = [];
+    let historyTimer: ReturnType<typeof setTimeout> | null = null;
+    const refresh = (event: string) => {
+      void queryClient.invalidateQueries({ queryKey: ["storage-snapshot"] });
+      if (event !== "history-changed") return;
+      if (historyTimer !== null) clearTimeout(historyTimer);
+      historyTimer = setTimeout(() => {
+        historyTimer = null;
+        void (async () => {
+          const queryKey = ["notification-history-pages"];
+          // A first request has no cached data, so invalidation alone would reuse
+          // its promise and could commit a page read before this change event.
+          if (queryClient.getQueryState(queryKey)?.data === undefined) {
+            await queryClient.cancelQueries({ queryKey, exact: true });
+          }
+          if (!disposed) await queryClient.invalidateQueries({ queryKey, exact: true });
+        })();
+      }, 80);
+    };
+    for (const event of ["history-changed", "monitor-changed"]) {
+      void listen(event, () => refresh(event)).then(stopListening => {
+        if (disposed) stopListening();
+        else {
+          unlisteners.push(stopListening);
+          // Start the first page read after its change listener is already active.
+          if (event === "history-changed") setHistorySubscribed(true);
+        }
+      });
+    }
+    return () => { disposed = true; if (historyTimer !== null) clearTimeout(historyTimer); unlisteners.forEach(stop => stop()); };
   }, [queryClient]);
 
   useEffect(() => {
     if (!settingsOpen) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape" || event.defaultPrevented) return;
       event.preventDefault();
       if (confirmSettingsClose) setConfirmSettingsClose(false);
       else requestCloseSettings();
@@ -199,36 +285,70 @@ function App() {
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [settingsOpen, confirmSettingsClose, requestCloseSettings]);
 
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const content = document.querySelector<HTMLElement>(".settings-dialog-scrollable .settings-content");
+    if (content) content.scrollTop = 0;
+  }, [settingsOpen, settingsSection]);
+
+  useEffect(() => {
+    if (!settingsOpen || !settingToFocus) return;
+    const frame = requestAnimationFrame(() => {
+      const input = document.getElementById(settingToFocus);
+      input?.focus({ preventScroll: true });
+      input?.scrollIntoView({ block: "nearest" });
+      setSettingToFocus(null);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [settingsOpen, settingsSection, settingToFocus, technicalDetailsOpen]);
+
+  useEffect(() => {
+    if (settingsOpen && (logging.isError || logging.data?.lastError || chooseLogDirectoryMutation.isPending ||
+      chooseLogDirectoryMutation.isError || openLogDirectoryMutation.isError)) setTechnicalDetailsOpen(true);
+  }, [settingsOpen, logging.isError, logging.data?.lastError, chooseLogDirectoryMutation.isPending,
+    chooseLogDirectoryMutation.isError, openLogDirectoryMutation.isError]);
+
   const openSettings = () => {
     const settings = storageState.data?.settings;
     if (!settings) return;
+    if (!testNotificationMutation.isPending) testNotificationMutation.reset();
     const baseline = {
       ...settings,
       languageCode: settings.languageCode ?? detectedLanguage(),
     };
     setSettingsDraft(baseline);
     setSettingsBaseline(baseline);
+    setSettingsSection("sources");
     setConfirmSettingsClose(false);
-    setIntervalValue(String(settings.checkIntervalMinutes));
+    setTechnicalDetailsOpen(false);
+    setSettingToFocus(null);
+    setIntervalValues(intervalDraft(settings.sourceCheckIntervals));
     setHttpTimeoutValue(String(settings.httpTimeoutSeconds));
     setHttpRetryValue(String(settings.httpRetryCount));
+    setLogSizeValue(String(settings.logMaxFileSizeMb));
+    setLogFilesValue(String(settings.logFileCount));
     updateSettingsMutation.reset();
+    chooseLogDirectoryMutation.reset();
+    openLogDirectoryMutation.reset();
     clearDataMutation.reset();
+    void logging.refetch();
     setSettingsOpen(true);
   };
 
   const saveSettings = () => {
-    if (!settingsDraft || !settingsAreValid) return;
+    if (!settingsDraft || !settingsAreValid || !settingsDirty || settingsLocked) return;
     updateSettingsMutation.mutate({
       ...settingsDraft,
-      checkIntervalMinutes: intervalMinutes,
+      sourceCheckIntervals: Object.fromEntries(sources.map(({ source }) => [source, Number(intervalValues[source])])) as SourceCheckIntervals,
       httpTimeoutSeconds,
       httpRetryCount,
+      logMaxFileSizeMb: Number(logSizeValue),
+      logFileCount: Number(logFilesValue),
     });
   };
 
   const confirmClearData = () => {
-    if (clearBlockedByCheck || clearDataMutation.isPending) return;
+    if (clearDataBlocked || clearDataMutation.isPending) return;
     if (window.confirm(t("clearDataConfirm"))) clearDataMutation.mutate();
   };
 
@@ -239,6 +359,13 @@ function App() {
       ...settings,
       [settingKey]: !settings[settingKey],
     });
+  };
+
+  const confirmInstallUpdate = () => {
+    const candidate = updates.data?.candidate;
+    if (candidate && window.confirm(t("confirmInstallUpdate", { version: candidate.version }))) {
+      installUpdateMutation.mutate(candidate.token);
+    }
   };
 
   return (
@@ -255,7 +382,7 @@ function App() {
                   ? t("statusWaitingInitialMode")
                   : isChecking
                     ? t("statusChecking")
-                    : t("statusActive")}
+                    : t(sourceFailures.length ? "statusPartial" : "statusActive")}
           </strong>
           {storageState.data?.monitor.lastSuccessfulCheckUtc && (
             <span>
@@ -265,14 +392,14 @@ function App() {
               )}
             </span>
           )}
-          {sourceFailures.map((failure, index) => (
-            <span className="status-error" key={`${failure.source}-${index}`}>
-              {sourceFailureText(failure, t)}
-            </span>
-          ))}
-          {storageState.data?.monitor.lastError && sourceFailures.length === 0 && (
+          {sourceFailures.length > 0 && <span className="status-error">{t("sourceProblemCount", { count: sourceFailures.length })}</span>}
+          {!sourceStates.length && storageState.data?.monitor.lastError && sourceFailures.length === 0 && (
             <span className="status-error">{t("lastCheckError")}: {t("checkFailed")}</span>
           )}
+          {logging.data?.restartRequired && <span className="logging-status" role="status">{t("logRestartRequired")}</span>}
+          {logging.data?.lastError && <span className="logging-status setting-error" role="alert">{t(
+            logging.data.usingFallback ? "logFallbackStatus" : logging.data.activeFilePath ? "logWriteErrorStatus" : "logDisabledStatus",
+          )}</span>}
         </div>
         <div className="status-actions">
           {(appState.isPending || storageState.isPending || isChecking) && (
@@ -289,6 +416,31 @@ function App() {
           </button>
         </div>
       </section>
+
+      {updates.data?.mode === "enabled" && updates.data.candidate && (
+        <section className="update-banner" role="status">
+          <Bell size={20} aria-hidden="true" />
+          <div className="update-banner-message">
+            <strong>{t("updateAvailable", { version: updates.data.candidate.version })}</strong>
+            {updatePhase === "downloading" && <span>{t("downloadingUpdate", {
+              progress: `${formatBytes(updates.data.downloadedBytes, i18n.language)}${updates.data.totalBytes === null ? "" : ` / ${formatBytes(updates.data.totalBytes, i18n.language)}`}`,
+            })}</span>}
+            {updatePhase === "installing" && <span>{t("installingUpdate")}</span>}
+            {(updates.data.lastError || installUpdateMutation.isError) && (
+              <span className="setting-error" role="alert">{t("updateFailed")}</span>
+            )}
+          </div>
+          <button
+            className="primary-button"
+            type="button"
+            disabled={updateBusy || isChecking || clearDataBlocked || clearDataMutation.isPending}
+            onClick={confirmInstallUpdate}
+          >
+            {updateInstalling && <LoaderCircle className="spinner" size={16} aria-hidden="true" />}
+            {t(updateInstalling ? "updating" : "updateNow")}
+          </button>
+        </section>
+      )}
 
       {storageState.data?.databaseRecovery && (
         <section className="recovery-panel" role="alert">
@@ -315,46 +467,45 @@ function App() {
           <div className="source-list">
             {sources.map((source) => {
               const enabled = storageState.data?.settings[source.settingKey] ?? false;
+              const state = sourceStates.find(state => state.source === source.source);
+              const phase = enabled ? (state?.phase ?? "waiting") : "disabled";
               return (
-                <button
-                  role="checkbox"
-                  aria-checked={enabled}
-                  className="source-row"
-                  disabled={!storageReady || sourceSettingsMutation.isPending}
-                  key={source.name}
-                  onClick={() => toggleSource(source.settingKey)}
-                  title={source.settingKey === "zerosEnabled" ? t("zerosWarning") : undefined}
-                  type="button"
-                >
-                  <span
-                    className={`source-check ${enabled ? "" : "disabled"}`}
-                    aria-hidden="true"
+                <div className="source-entry" key={source.source} data-source={source.source}>
+                  <button
+                    role="checkbox"
+                    aria-checked={enabled}
+                    aria-label={source.name}
+                    className="source-row"
+                    disabled={!storageReady || sourceSettingsMutation.isPending}
+                    onClick={() => toggleSource(source.settingKey)}
+                    title={source.settingKey === "zerosEnabled" ? t("zerosWarning") : undefined}
+                    type="button"
                   >
-                    {enabled && <Check size={15} />}
-                  </span>
-                  <div>
-                    <strong>{source.name}</strong>
-                    {"descriptionKey" in source && <span>{t(source.descriptionKey)}</span>}
-                  </div>
-                </button>
+                    <span className={`source-check ${enabled ? "" : "disabled"}`} aria-hidden="true">
+                      {enabled && <Check size={15} />}
+                    </span>
+                    <div>
+                      <strong>{source.name}</strong>
+                      <span>{t(source.descriptionKey)}</span>
+                    </div>
+                    <span className={`source-phase phase-${phase}`}>{t(`sourcePhase.${phase}`)}</span>
+                  </button>
+                  {(state?.lastError || Boolean(state?.unresolvedLinks)) && (
+                    <div className="source-health">
+                      <details className="source-details">
+                        <summary>{t("sourceDetails")}</summary>
+                        {state?.lastError && <p className="setting-error">{sourceFailureText(state.lastError, t)}</p>}
+                        {Boolean(state?.unresolvedLinks) && <p>{t("sourceUnresolvedLinks", { count: state?.unresolvedLinks })}</p>}
+                      </details>
+                    </div>
+                  )}
+                </div>
               );
             })}
           </div>
           {sourceSettingsMutation.isError && (
             <p className="monitor-message error">{t("sourceUpdateError")}</p>
           )}
-
-          <div className="control-row">
-            <div>
-              <Clock3 size={17} aria-hidden="true" />
-              <span>{t("interval")}</span>
-            </div>
-            <strong>
-              {t("minutes", {
-                count: storageState.data?.settings.checkIntervalMinutes ?? 15,
-              })}
-            </strong>
-          </div>
 
           <div className="source-actions">
             <button
@@ -363,8 +514,7 @@ function App() {
                 !storageReady ||
                 checkMutation.isPending ||
                 clearDataMutation.isPending ||
-                updateInstalling ||
-                storageState.data?.monitor.isChecking
+                updateInstalling
               }
               onClick={() => checkMutation.mutate()}
               title={!storageReady ? t("checkUnavailable") : undefined}
@@ -372,49 +522,13 @@ function App() {
             >
               {checkMutation.isPending ? t("checkingNow") : t("checkNow")}
             </button>
-            <button
-              className="secondary-button test-notification-button"
-              disabled={!storageReady || testNotificationMutation.isPending}
-              onClick={() => testNotificationMutation.mutate()}
-              type="button"
-            >
-              <Bell size={16} aria-hidden="true" />
-              {testNotificationMutation.isPending
-                ? t("sendingTestNotification")
-                : t("testNotification")}
-            </button>
           </div>
           {checkMutation.isError && (
             <p className="monitor-message error">{t("checkFailed")}</p>
           )}
-          {updates.data?.candidate && (
-            <button className="secondary-button update-banner" type="button" onClick={openSettings}>
-              {t("updateAvailable", { version: updates.data.candidate.version })}
-            </button>
-          )}
-          {testNotificationMutation.isSuccess && (
-            <p className="monitor-message">{t("testNotificationSent")}</p>
-          )}
-          {testNotificationMutation.isError && (
-            <p className="monitor-message error">{t(notificationErrorKey(testNotificationMutation.error))}</p>
-          )}
           {checkMutation.data && (
-            <p className="monitor-message">
-              {t(
-                checkMutation.data.baselineDeferred
-                  ? "checkBaselineDeferred"
-                  : checkMutation.data.isInitialSynchronization
-                    ? "checkBaselineReady"
-                    : checkMutation.data.failures.length > 0
-                      ? "checkPartial"
-                      : checkMutation.data.newItems.length > 0
-                        ? "checkNewItems"
-                        : "checkNoNewItems",
-                {
-                  count: checkMutation.data.newItems.length,
-                  failures: checkMutation.data.failures.length,
-                },
-              )}
+            <p className="monitor-message" role="status">
+              {t("checkStarted", { count: checkMutation.data.startedSources.length, running: checkMutation.data.alreadyRunningSources.length })}
             </p>
           )}
         </section>
@@ -447,56 +561,52 @@ function App() {
           </div>
 
           {notificationHistory.isPending ? (
-            <div className="empty-state">
-              <LoaderCircle className="spinner" size={25} aria-hidden="true" />
-              <p>{t("historyLoading")}</p>
+            <div className="empty-state"><LoaderCircle className="spinner" size={25} aria-hidden="true" /><p>{t("historyLoading")}</p></div>
+          ) : notificationHistory.isError && history.length === 0 ? (
+            <div className="empty-state error-state"><History size={28} aria-hidden="true" /><p>{t("historyUnavailable")}</p>
+              <button className="secondary-button history-retry" type="button" onClick={() => void notificationHistory.refetch()}>{t("historyRetry")}</button>
             </div>
-          ) : notificationHistory.isError ? (
-            <div className="empty-state error-state">
-              <History size={28} aria-hidden="true" />
-              <p>{t("historyUnavailable")}</p>
-            </div>
-          ) : notificationHistory.data.length === 0 ? (
-            <div className="empty-state">
-              <History size={28} aria-hidden="true" />
-              <p>{t("emptyHistory")}</p>
-            </div>
+          ) : history.length === 0 ? (
+            <div className="empty-state"><History size={28} aria-hidden="true" /><p>{t("emptyHistory")}</p></div>
           ) : (
-            <div className="history-list">
-              {notificationHistory.data.map((notification) => (
-                <button
-                  className={`history-item ${notification.readAtUtc ? "" : "unread"}`}
-                  disabled={
-                    openNotificationMutation.isPending &&
-                    openNotificationMutation.variables === notification.id
-                  }
-                  key={notification.id}
-                  onClick={(event) => {
-                    event.currentTarget.blur();
-                    openNotificationMutation.mutate(notification.id);
-                  }}
-                  title={t("openNotification")}
-                  type="button"
-                >
-                  <span className="history-item-main">
-                    <strong>{notification.title}</strong>
-                    <small>
-                      {notification.store === "steam" ? "Steam"
-                        : notification.store === "epicGames" ? "Epic Games"
-                        : notification.store === "gog" ? "GOG"
-                        : t("unknownPlatform")} · {sourceName(notification.source)} · {t(`kind.${notification.kind}`)}
-                    </small>
-                  </span>
-                  <time dateTime={notification.receivedAtUtc}>
-                    {formatCheckTime(notification.receivedAtUtc, i18n.language)}
-                  </time>
-                  {!notification.readAtUtc && (
-                    <span className="unread-dot" aria-label={t("unread")} />
-                  )}
-                </button>
-              ))}
-            </div>
+            <VirtualHistoryList records={history} totalCount={storageState.data?.counts.notificationHistory ?? history.length}
+              label={t("history")} layoutKey={i18n.language} hasMore={Boolean(notificationHistory.hasNextPage)}
+              fetching={notificationHistory.isFetching} loadingMore={notificationHistory.isFetchingNextPage}
+              error={notificationHistory.isFetchNextPageError || notificationHistory.isRefetchError}
+              loadingText={t("historyLoadingMore")} errorText={t("historyPageUnavailable")} retryText={t("historyRetry")}
+              onLoadMore={loadMoreHistory} onRetry={retryHistory}
+              renderRow={(notification, rowProps) => {
+                const detectors = notificationDetectorNames(notification);
+                return (
+                  <article {...rowProps} className={`history-item ${notification.readAtUtc ? "" : "unread"}`} key={notification.id} data-notification-id={notification.id}>
+                    <div className="history-item-layout">
+                    <button
+                      className="history-open"
+                      disabled={openNotificationMutation.isPending && openNotificationMutation.variables === notification.id}
+                      onClick={event => { event.currentTarget.blur(); openNotificationMutation.mutate(notification.id); }}
+                      title={t("openNotification")}
+                      type="button"
+                    >
+                      <span className="history-item-main">
+                        <span className="history-item-title">
+                          {!notification.readAtUtc && <span className="unread-dot" aria-label={t("unread")} />}
+                          <strong>{notification.title}</strong>
+                        </span>
+                        <small>
+                          {notification.store === "steam" ? "Steam" : notification.store === "epicGames" ? "Epic Games" : notification.store === "gog" ? "GOG" : t("unknownPlatform")} · {notificationOriginName(notification)}{detectors ? ` · ${t("foundVia", { sources: detectors })}` : ""} · {t(`kind.${notification.kind}`)}
+                        </small>
+                      </span>
+                    </button>
+                    <div className="history-item-actions">
+                      <time dateTime={notification.receivedAtUtc}>{formatCheckTime(notification.receivedAtUtc, i18n.language)}</time>
+                      {!notification.readAtUtc && <button className="mark-read-button secondary-button" type="button" disabled={markReadMutation.isPending && markReadMutation.variables === notification.id} onClick={() => markReadMutation.mutate(notification.id)}>{t("markRead")}</button>}
+                    </div>
+                    </div>
+                  </article>
+                );
+              }} />
           )}
+          {markReadMutation.isError && <p className="monitor-message error">{t("markReadError")}</p>}
           {openNotificationMutation.isError && (
             <p className="monitor-message error">{t("openNotificationError")}</p>
           )}
@@ -505,7 +615,7 @@ function App() {
 
       {settingsOpen && settingsDraft && (
         <div
-          className="modal-backdrop"
+          className="modal-backdrop settings-backdrop"
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) requestCloseSettings();
           }}
@@ -514,7 +624,7 @@ function App() {
           <section
             aria-labelledby="settings-title"
             aria-modal="true"
-            aria-busy={updateSettingsMutation.isPending}
+            aria-busy={updateSettingsMutation.isPending || chooseLogDirectoryMutation.isPending}
             className="settings-dialog settings-dialog-scrollable"
             role="dialog"
           >
@@ -525,7 +635,7 @@ function App() {
               <button
                 aria-label={t("closeSettings")}
                 className="icon-button"
-                disabled={updateSettingsMutation.isPending}
+                disabled={updateSettingsMutation.isPending || chooseLogDirectoryMutation.isPending}
                 onClick={requestCloseSettings}
                 type="button"
               >
@@ -533,71 +643,75 @@ function App() {
               </button>
             </div>
 
-            <div className="settings-content" inert={updateSettingsMutation.isPending}>
-              <fieldset className="settings-group">
-                <legend>{t("sources")}</legend>
-                <p className="setting-hint">{t("zerosWarning")}</p>
-                <label className="check-setting">
-                  <input
-                    checked={settingsDraft.giveeClubEnabled}
-                    onChange={(event) =>
-                      setSettingsDraft({
-                        ...settingsDraft,
-                        giveeClubEnabled: event.target.checked,
-                      })
-                    }
-                    type="checkbox"
-                  />
-                  <span>Givee Club</span>
-                </label>
-                <label className="check-setting">
-                  <input
-                    checked={settingsDraft.gamesForFarmEnabled}
-                    onChange={(event) =>
-                      setSettingsDraft({
-                        ...settingsDraft,
-                        gamesForFarmEnabled: event.target.checked,
-                      })
-                    }
-                    type="checkbox"
-                  />
-                  <span>Games for Farm</span>
-                </label>
-                <label className="check-setting">
-                  <input
-                    checked={settingsDraft.zerosEnabled}
-                    onChange={(event) => setSettingsDraft({ ...settingsDraft, zerosEnabled: event.target.checked })}
-                    type="checkbox"
-                  />
-                  <span>Zeros (HTTP)</span>
-                </label>
+            <div className="settings-body">
+              <nav className="settings-navigation" role="tablist" aria-label={t("settingsSectionsLabel")} aria-orientation="vertical">
+                {settingsSections.map(section => (
+                  <button key={section} type="button" role="tab" id={`settings-tab-${section}`}
+                    data-settings-section={section} aria-selected={settingsSection === section}
+                    aria-controls={`settings-panel-${section}`} tabIndex={settingsSection === section ? 0 : -1}
+                    disabled={settingsLocked} onClick={() => selectSettingsSection(section)}
+                    onKeyDown={event => onSettingsNavigationKey(event, section)}>
+                    {t(`settingsSections.${section}`)}
+                  </button>
+                ))}
+              </nav>
+            <div className="settings-content" inert={settingsLocked}>
+              <section className="settings-panel" role="tabpanel" id="settings-panel-sources"
+                aria-labelledby="settings-tab-sources" hidden={settingsSection !== "sources"}>
+              <fieldset className="settings-group source-interval-settings">
+                <legend>{t("sourcesAndIntervals")}</legend>
+                <p className="setting-hint" id="source-interval-range">{t("intervalHint")}</p>
+                {sources.map(({ source, name, settingKey }) => {
+                  const valid = isIntegerInRange(intervalValues[source], 5, 1_440);
+                  return (
+                    <div className="source-setting setting-card" key={source} data-source-setting={source}>
+                      <div className="source-setting-row">
+                        <div className="setting-card-copy">
+                        <label className="check-setting" htmlFor={`source-enabled-${source}`}>
+                          <input id={`source-enabled-${source}`} type="checkbox" checked={settingsDraft[settingKey]}
+                            onChange={event => setSettingsDraft({ ...settingsDraft, [settingKey]: event.target.checked })} />
+                          <span>{name}{source === "zeros" ? " (HTTP)" : ""}</span>
+                        </label>
+                        {source === "zeros" && <div className="source-setting-note">
+                          <p className="setting-hint">{t("zerosConnectionSummary")}</p>
+                          <details className="settings-explanation"><summary>{t("connectionDetails")}</summary><p>{t("zerosWarning")}</p></details>
+                        </div>}
+                        <small id={`check-interval-${source}-hint`} className="setting-error" hidden={valid}>
+                          {t("intervalError")}
+                        </small>
+                        </div>
+                        <div className="source-setting-interval">
+                          <input aria-label={t("sourceIntervalLabel", { source: name })}
+                          aria-describedby={`source-interval-range${valid ? "" : ` check-interval-${source}-hint`}`}
+                          aria-invalid={!valid}
+                          id={`check-interval-${source}`}
+                          inputMode="numeric"
+                          max={1_440}
+                          min={5}
+                          onChange={(event) => setIntervalValues(values => ({ ...values, [source]: event.target.value }))}
+                          type="number"
+                          value={intervalValues[source]}
+                        />
+                          <span aria-hidden="true">{t("minutesUnit")}</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
               </fieldset>
+              </section>
 
-              <div className="settings-group">
-                <label className="input-setting" htmlFor="check-interval">
-                  <span>{t("intervalMinutes")}</span>
-                  <input
-                    aria-invalid={!intervalIsValid}
-                    id="check-interval"
-                    inputMode="numeric"
-                    max={1_440}
-                    min={5}
-                    onChange={(event) => setIntervalValue(event.target.value)}
-                    type="number"
-                    value={intervalValue}
-                  />
-                </label>
-                <small className={intervalIsValid ? "setting-hint" : "setting-error"}>
-                  {t(intervalIsValid ? "intervalHint" : "intervalError")}
-                </small>
-              </div>
-
+              <section className="settings-panel" role="tabpanel" id="settings-panel-network"
+                aria-labelledby="settings-tab-network" hidden={settingsSection !== "network"}>
               <fieldset className="settings-group">
                 <legend>{t("network")}</legend>
-                <label className="input-setting" htmlFor="http-timeout">
-                  <span>{t("httpTimeoutSeconds")}</span>
+                <SettingCard controlId="http-timeout" title={t("httpTimeoutSeconds")}
+                  description={<small id="http-timeout-hint" className={httpTimeoutIsValid ? "setting-hint" : "setting-error"}>
+                    {t(httpTimeoutIsValid ? "httpTimeoutHint" : "httpTimeoutError")}
+                  </small>}>
                   <input
                     aria-invalid={!httpTimeoutIsValid}
+                    aria-describedby="http-timeout-hint"
                     id="http-timeout"
                     inputMode="numeric"
                     max={120}
@@ -606,14 +720,14 @@ function App() {
                     type="number"
                     value={httpTimeoutValue}
                   />
-                </label>
-                <small className={httpTimeoutIsValid ? "setting-hint" : "setting-error"}>
-                  {t(httpTimeoutIsValid ? "httpTimeoutHint" : "httpTimeoutError")}
-                </small>
-                <label className="input-setting" htmlFor="http-retries">
-                  <span>{t("httpRetryCount")}</span>
+                </SettingCard>
+                <SettingCard controlId="http-retries" title={t("httpRetryCount")}
+                  description={<small id="http-retries-hint" className={httpRetryIsValid ? "setting-hint" : "setting-error"}>
+                    {t(httpRetryIsValid ? "httpRetryHint" : "httpRetryError")}
+                  </small>}>
                   <input
                     aria-invalid={!httpRetryIsValid}
+                    aria-describedby="http-retries-hint"
                     id="http-retries"
                     inputMode="numeric"
                     max={5}
@@ -622,13 +736,13 @@ function App() {
                     type="number"
                     value={httpRetryValue}
                   />
-                </label>
-                <small className={httpRetryIsValid ? "setting-hint" : "setting-error"}>
-                  {t(httpRetryIsValid ? "httpRetryHint" : "httpRetryError")}
-                </small>
+                </SettingCard>
               </fieldset>
+              </section>
 
-              <fieldset className="settings-group">
+              <section className="settings-panel" role="tabpanel" id="settings-panel-application"
+                aria-labelledby="settings-tab-application" hidden={settingsSection !== "application"}>
+              <fieldset className="settings-group setting-card-block">
                 <legend>{t("language")}</legend>
                 <div className="segmented-control">
                   {(["ru", "en"] as const).map((language) => (
@@ -650,7 +764,7 @@ function App() {
               <fieldset className="settings-group">
                 <legend>{t("systemBehavior")}</legend>
                 <label
-                  className={`check-setting check-setting-details ${isDevelopment ? "disabled" : ""}`}
+                  className={`setting-card check-setting check-setting-details ${isDevelopment ? "disabled" : ""}`}
                 >
                   <input
                     id="start-at-login"
@@ -675,11 +789,29 @@ function App() {
                     </small>
                   </span>
                 </label>
-                <label className={`check-setting check-setting-details ${!settingsDraft.startAtLogin ? "disabled" : ""}`}>
+                <SettingCard controlId="autostart-target" title={t("autostartTarget")}
+                  description={<small id="autostart-target-hint" className="setting-hint">{t("autostartTargetHint")}</small>}>
+                  <Select<"gui" | "cli">
+                    id="autostart-target"
+                    label={t("autostartTarget")}
+                    describedBy="autostart-target-hint"
+                    disabled={isDevelopment}
+                    value={settingsDraft.autostartTarget}
+                    onValueChange={(autostartTarget) => setSettingsDraft({
+                      ...settingsDraft,
+                      autostartTarget,
+                    })}
+                    options={[
+                      { value: "gui", label: t("autostartTargetGui") },
+                      { value: "cli", label: t("autostartTargetCli") },
+                    ]}
+                  />
+                </SettingCard>
+                <label className={`setting-card check-setting check-setting-details ${!settingsDraft.startAtLogin || settingsDraft.autostartTarget === "cli" ? "disabled" : ""}`}>
                   <input
                     id="start-in-tray"
                     checked={settingsDraft.startInTray}
-                    disabled={!settingsDraft.startAtLogin}
+                    disabled={!settingsDraft.startAtLogin || settingsDraft.autostartTarget === "cli"}
                     onChange={(event) => setSettingsDraft({
                       ...settingsDraft,
                       startInTray: event.target.checked,
@@ -691,7 +823,7 @@ function App() {
                     <small>{t("startInTrayDescription")}</small>
                   </span>
                 </label>
-                <label className="check-setting check-setting-details">
+                <label className="setting-card check-setting check-setting-details">
                   <input
                     id="keep-running-in-tray"
                     checked={settingsDraft.keepRunningInTray}
@@ -709,11 +841,18 @@ function App() {
                   </span>
                 </label>
               </fieldset>
+              </section>
 
+              <section className="settings-panel" role="tabpanel" id="settings-panel-notifications"
+                aria-labelledby="settings-tab-notifications" hidden={settingsSection !== "notifications"}>
               <fieldset className="settings-group">
                 <legend>{t("notifications")}</legend>
-                <label className="check-setting check-setting-details">
+                <div className="setting-card-block">
+                <p className="setting-hint">{t("notificationsHint")}</p>
+                <div className="store-notification-options">
+                <label className="check-setting">
                   <input
+                    id="notifications-steam"
                     checked={settingsDraft.steamNotificationsEnabled}
                     onChange={(event) => setSettingsDraft({
                       ...settingsDraft,
@@ -723,11 +862,11 @@ function App() {
                   />
                   <span>
                     <strong>{t("steamNotifications")}</strong>
-                    <small>{t("storeNotificationsDescription", { store: "Steam" })}</small>
                   </span>
                 </label>
-                <label className="check-setting check-setting-details">
+                <label className="check-setting">
                   <input
+                    id="notifications-epicGames"
                     checked={settingsDraft.epicGamesNotificationsEnabled}
                     onChange={(event) => setSettingsDraft({
                       ...settingsDraft,
@@ -737,11 +876,11 @@ function App() {
                   />
                   <span>
                     <strong>{t("epicGamesNotifications")}</strong>
-                    <small>{t("storeNotificationsDescription", { store: "Epic Games" })}</small>
                   </span>
                 </label>
-                <label className="check-setting check-setting-details">
+                <label className="check-setting">
                   <input
+                    id="notifications-gog"
                     checked={settingsDraft.gogNotificationsEnabled}
                     onChange={(event) => setSettingsDraft({
                       ...settingsDraft,
@@ -751,11 +890,12 @@ function App() {
                   />
                   <span>
                     <strong>{t("gogNotifications")}</strong>
-                    <small>{t("storeNotificationsDescription", { store: "GOG" })}</small>
                   </span>
                 </label>
-                <small className="setting-hint">{t("storeFiltersHint")}</small>
-                <label className="check-setting check-setting-details">
+                </div>
+                <details className="settings-explanation"><summary>{t("notificationFilterDetails")}</summary><p>{t("storeFiltersHint")}</p></details>
+                </div>
+                <label className="setting-card check-setting check-setting-details">
                   <input
                     checked={settingsDraft.notificationSoundEnabled}
                     onChange={(event) =>
@@ -771,11 +911,29 @@ function App() {
                     <small>{t("notificationSoundDescription")}</small>
                   </span>
                 </label>
+                <div className="notification-test setting-card-block">
+                  <button
+                    className="secondary-button test-notification-button"
+                    disabled={!storageReady || testNotificationMutation.isPending || updateSettingsMutation.isPending}
+                    onClick={() => testNotificationMutation.mutate()}
+                    aria-describedby="notification-test-hint"
+                    type="button"
+                  >
+                    <Bell size={16} aria-hidden="true" />
+                    {testNotificationMutation.isPending ? t("sendingTestNotification") : t("testNotification")}
+                  </button>
+                  <small className="setting-hint" id="notification-test-hint">{t("testNotificationSettingsHint")}</small>
+                  {testNotificationMutation.isSuccess && <p className="monitor-message" role="status">{t("testNotificationSent")}</p>}
+                  {testNotificationMutation.isError && <p className="monitor-message error" role="alert">{t(notificationErrorKey(testNotificationMutation.error))}</p>}
+                </div>
               </fieldset>
+              </section>
 
-              <fieldset className="settings-group">
+              <section className="settings-panel" role="tabpanel" id="settings-panel-diagnostics"
+                aria-labelledby="settings-tab-diagnostics" hidden={settingsSection !== "diagnostics"}>
+              <fieldset className="settings-group logging-settings">
                 <legend>{t("diagnostics")}</legend>
-                <label className="check-setting check-setting-details">
+                <label className="setting-card check-setting check-setting-details">
                   <input
                     checked={settingsDraft.verboseLogging}
                     onChange={(event) =>
@@ -791,9 +949,67 @@ function App() {
                     <small>{t("verboseLoggingDescription")}</small>
                   </span>
                 </label>
+                <SettingCard controlId="log-file-size" title={t("logFileSize")}
+                  description={<small id="log-file-size-hint" className={logSizeIsValid ? "setting-hint" : "setting-error"}>
+                    {t(logSizeIsValid ? "logFileSizeHint" : "logFileSizeError")}
+                  </small>}>
+                  <input id="log-file-size" type="number" inputMode="numeric" min={1} max={100} step={1}
+                    aria-invalid={!logSizeIsValid} aria-describedby="log-file-size-hint"
+                    value={logSizeValue} onChange={event => setLogSizeValue(event.target.value)} />
+                </SettingCard>
+                <SettingCard controlId="log-file-count" title={t("logFileCount")}
+                  description={<small id="log-file-count-hint" className={logFilesIsValid ? "setting-hint" : "setting-error"}>
+                    {t(logFilesIsValid ? "logFileCountHint" : "logFileCountError")}
+                  </small>}>
+                  <input id="log-file-count" type="number" inputMode="numeric" min={1} max={10} step={1}
+                    aria-invalid={!logFilesIsValid} aria-describedby="log-file-count-hint"
+                    value={logFilesValue} onChange={event => setLogFilesValue(event.target.value)} />
+                </SettingCard>
+                <div className="log-path-setting setting-card-block">
+                  <strong id="log-directory-label">{t("logDirectory")}</strong>
+                  <output className="log-path" aria-labelledby="log-directory-label" data-testid="log-directory-draft">
+                    {settingsDraft.logDirectory ?? t("logDirectoryDefault")}
+                  </output>
+                  <div className="log-folder-actions">
+                    <button className="secondary-button" type="button" data-testid="choose-log-directory"
+                      disabled={chooseLogDirectoryMutation.isPending || updateSettingsMutation.isPending}
+                      onClick={() => chooseLogDirectoryMutation.mutate()}>{t("browse")}</button>
+                    <button className="secondary-button" type="button" data-testid="default-log-directory"
+                      disabled={settingsDraft.logDirectory === null || chooseLogDirectoryMutation.isPending || updateSettingsMutation.isPending}
+                      onClick={() => setSettingsDraft({...settingsDraft, logDirectory: null})}>{t("useDefault")}</button>
+                  </div>
+                  <small className="setting-hint">{t("logDirectoryHint")}</small>
+                  {chooseLogDirectoryMutation.isError && <small className="setting-error" role="alert">{t("logChooseDirectoryError")}</small>}
+                </div>
+                <details className="settings-technical-details" open={technicalDetailsOpen}
+                  onToggle={event => setTechnicalDetailsOpen(event.currentTarget.open)}>
+                <summary>{t("technicalDetails")}</summary>
+                <div className="log-path-setting">
+                  <strong id="active-log-label">{t("logActiveFile")}</strong>
+                  <output className="log-path" aria-labelledby="active-log-label" data-testid="log-active-file">
+                    {logging.isPending ? t("logStateLoading") : logging.data?.activeFilePath ?? t("logNoActiveFile")}
+                  </output>
+                  <button className="secondary-button" type="button" data-testid="open-log-directory"
+                    disabled={!logging.data?.effectiveDirectory || openLogDirectoryMutation.isPending}
+                    onClick={() => openLogDirectoryMutation.mutate()}>{t("openFolder")}</button>
+                  {openLogDirectoryMutation.isError && <small className="setting-error" role="alert">{t("logOpenDirectoryError")}</small>}
+                  {logging.isError && <small className="setting-error" role="alert">{t("logStateError")}</small>}
+                </div>
+                </details>
+                <small className={logging.data?.restartRequired ? "logging-restart-required" : "setting-hint"}
+                  role={logging.data?.restartRequired ? "status" : undefined}>
+                  {t(logging.data?.restartRequired ? "logRestartRequired" : "logRestartHint")}
+                </small>
+                {logging.data?.lastError && <div className="log-error" role="alert">
+                  <p>{t(logging.data.usingFallback ? "logFallback" : logging.data.activeFilePath ? "logWriteError" : "logDisabled")}</p>
+                  <span>{logging.data.lastError}</span>
+                </div>}
               </fieldset>
+              </section>
 
-              <fieldset className="settings-group app-updates">
+              <section className="settings-panel" role="tabpanel" id="settings-panel-updatesData"
+                aria-labelledby="settings-tab-updatesData" hidden={settingsSection !== "updatesData"}>
+              <fieldset className="settings-group setting-card-block app-updates">
                 <legend>{t("appUpdates")}</legend>
                 <p>{t("installedVersion", { version: updates.data?.currentVersion ?? appState.data?.version ?? "—" })}</p>
                 {updates.data?.mode !== "enabled" && <p className="setting-hint">{t(
@@ -809,13 +1025,8 @@ function App() {
                   {updates.data.candidate && <div className="update-candidate">
                     <strong>{t("updateAvailable", { version: updates.data.candidate.version })}</strong>
                     {updates.data.candidate.notes && <pre className="update-notes">{updates.data.candidate.notes}</pre>}
-                    <button className="primary-button" type="button" disabled={updateBusy || clearBlockedByCheck || clearDataMutation.isPending}
-                      onClick={() => {
-                        const candidate = updates.data?.candidate;
-                        if (candidate && window.confirm(t("confirmInstallUpdate", { version: candidate.version }))) {
-                          installUpdateMutation.mutate(candidate.token);
-                        }
-                      }}>{t("installUpdate")}</button>
+                    <button className="primary-button" type="button" disabled={updateBusy || isChecking || clearDataBlocked || clearDataMutation.isPending}
+                      onClick={confirmInstallUpdate}>{t("installUpdate")}</button>
                   </div>}
                   {updatePhase === "downloading" && <p role="status">{t("downloadingUpdate", {
                     progress: `${formatBytes(updates.data.downloadedBytes, i18n.language)}${updates.data.totalBytes === null ? "" : ` / ${formatBytes(updates.data.totalBytes, i18n.language)}`}`,
@@ -825,7 +1036,7 @@ function App() {
                 </>}
               </fieldset>
 
-              <div className="settings-group data-settings">
+              <div className="settings-group setting-card-block data-settings">
                 <div className="data-summary">
                   <HardDrive size={19} aria-hidden="true" />
                   <div>
@@ -841,15 +1052,15 @@ function App() {
                 <p>{t("clearDataDescription")}</p>
                 <button
                   className="danger-button"
-                  disabled={clearDataMutation.isPending || clearBlockedByCheck}
-                  aria-describedby={clearBlockedByCheck ? "clear-data-busy-hint" : undefined}
+                  disabled={clearDataMutation.isPending || clearDataBlocked}
+                  aria-describedby={clearDataBlocked ? "clear-data-busy-hint" : undefined}
                   onClick={confirmClearData}
                   type="button"
                 >
                   <Trash2 size={16} aria-hidden="true" />
                   {clearDataMutation.isPending ? t("clearingData") : t("clearData")}
                 </button>
-                {clearBlockedByCheck && (
+                {clearDataBlocked && (
                   <small className="setting-hint" id="clear-data-busy-hint">
                     {t(updateInstalling ? "updateDataBusy" : "clearDataBusy")}
                   </small>
@@ -865,20 +1076,41 @@ function App() {
                   </small>
                 )}
               </div>
+              </section>
+            </div>
             </div>
 
             <footer className="settings-footer">
+              <div className="settings-footer-main">
+              <div className="settings-footer-status">
               <p className="settings-draft-status" role="status">
                 {t(settingsDirty ? "settingsUnsaved" : "settingsUnchanged")}
               </p>
               {!settingsAreValid && (
-                <button className="settings-validation-link" type="button" onClick={() => {
-                  document.getElementById(!intervalIsValid ? "check-interval" :
-                    !httpTimeoutIsValid ? "http-timeout" : "http-retries")?.focus();
-                }}>
-                  {t(!intervalIsValid ? "intervalError" : !httpTimeoutIsValid ? "httpTimeoutError" : "httpRetryError")}
+                <button className="settings-validation-link" type="button" disabled={settingsLocked} onClick={focusInvalidSetting}>
+                  {t(firstInvalidSetting[1])}
                 </button>
               )}
+              </div>
+              <div className="dialog-actions">
+                <button
+                  className="secondary-button dialog-button"
+                  disabled={updateSettingsMutation.isPending || chooseLogDirectoryMutation.isPending}
+                  onClick={requestCloseSettings}
+                  type="button"
+                >
+                  {t("cancel")}
+                </button>
+                <button
+                  className="primary-button dialog-button"
+                  disabled={!settingsDirty || !settingsAreValid || updateSettingsMutation.isPending || chooseLogDirectoryMutation.isPending}
+                  onClick={saveSettings}
+                  type="button"
+                >
+                  {updateSettingsMutation.isPending ? t("saving") : t("save")}
+                </button>
+              </div>
+              </div>
               {updateSettingsMutation.isError && (
                 <p className="dialog-error" role="alert">{t("saveSettingsError")}</p>
               )}
@@ -887,32 +1119,14 @@ function App() {
                   <p>{t("settingsClosePrompt")}</p>
                   <div className="settings-close-actions">
                     <button className="secondary-button" type="button"
-                      disabled={updateSettingsMutation.isPending}
+                      disabled={updateSettingsMutation.isPending || chooseLogDirectoryMutation.isPending}
                       onClick={() => setConfirmSettingsClose(false)}>{t("settingsContinueEditing")}</button>
                     <button className="secondary-button" type="button"
-                      disabled={updateSettingsMutation.isPending}
+                      disabled={updateSettingsMutation.isPending || chooseLogDirectoryMutation.isPending}
                       onClick={() => setSettingsOpen(false)}>{t("settingsDiscard")}</button>
                   </div>
                 </div>
               )}
-              <div className="dialog-actions">
-                <button
-                  className="secondary-button dialog-button"
-                  disabled={updateSettingsMutation.isPending}
-                  onClick={requestCloseSettings}
-                  type="button"
-                >
-                  {t("cancel")}
-                </button>
-                <button
-                  className="primary-button dialog-button"
-                  disabled={!settingsAreValid || updateSettingsMutation.isPending}
-                  onClick={saveSettings}
-                  type="button"
-                >
-                  {updateSettingsMutation.isPending ? t("saving") : t("save")}
-                </button>
-              </div>
             </footer>
           </section>
         </div>
@@ -967,7 +1181,7 @@ export default App;
 function formatCheckTime(value: string, language: string): string {
   return new Date(value).toLocaleString(language.startsWith("ru") ? "ru-RU" : "en-US", {
     dateStyle: "short",
-    timeStyle: "medium",
+    timeStyle: "short",
   });
 }
 

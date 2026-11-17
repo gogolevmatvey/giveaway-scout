@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
 use giveaway_scout_core::{
-    Database, GAMES_FOR_FARM_FEED_URL, GIVEE_CLUB_FEED_URL, GiveawaySource, HttpPageFetcher,
-    PageFetchError, PageFetcher, apply_source_check, check_sources,
+    Database, FREE_STEAM_KEYS_FEED_URL, GAMES_FOR_FARM_FEED_URL, GIVEE_CLUB_FEED_URL,
+    GiveawaySource, HttpPageFetcher, PageFetchError, PageFetcher, SourceFailureReason,
+    ZEROS_FEED_URL, apply_source_check, check_sources,
 };
 
 struct FixtureFetcher {
@@ -33,11 +34,190 @@ async fn checks_enabled_sources_and_combines_items() {
         ]),
     };
 
-    let result = check_sources(&fetcher, true, true, false).await;
+    let result = check_sources(&fetcher, true, true, false, false).await;
 
     assert_eq!(result.items.len(), 4);
     assert_eq!(result.checked_sources.len(), 2);
     assert!(result.failures.is_empty());
+}
+
+#[tokio::test]
+async fn free_steam_keys_is_first_without_reordering_each_feed() {
+    let fetcher = FixtureFetcher {
+        responses: HashMap::from([
+            (
+                GIVEE_CLUB_FEED_URL,
+                Ok(include_str!("fixtures/html/givee-club.html")),
+            ),
+            (
+                GAMES_FOR_FARM_FEED_URL,
+                Ok(include_str!("fixtures/html/games-for-farm.html")),
+            ),
+            (ZEROS_FEED_URL, Ok(r#"{"periods":[]}"#)),
+            (
+                FREE_STEAM_KEYS_FEED_URL,
+                Ok(include_str!("fixtures/json/free-steam-keys.json")),
+            ),
+        ]),
+    };
+    let result = check_sources(&fetcher, true, true, true, true).await;
+    assert!(result.failures.is_empty());
+    assert_eq!(result.checked_sources, GiveawaySource::ALL);
+    assert_eq!(result.items.len(), 6);
+    assert_eq!(result.items[0].source, GiveawaySource::FreeSteamKeys);
+    assert_eq!(result.items[2].source, GiveawaySource::GiveeClub);
+    assert_eq!(result.items[4].source, GiveawaySource::GamesForFarm);
+    assert_eq!(result.items[0].source_id, "258");
+    assert_eq!(result.items[1].source_id, "257");
+}
+
+#[tokio::test]
+async fn disabled_free_steam_keys_makes_no_request() {
+    let fetcher = FixtureFetcher {
+        responses: HashMap::new(),
+    };
+    let result = check_sources(&fetcher, false, false, false, false).await;
+    assert_eq!(result, Default::default());
+}
+
+#[tokio::test]
+async fn free_steam_keys_network_or_parse_failure_defers_initial_baseline_until_recovery() {
+    for response in [
+        Err("temporary API failure"),
+        Ok(""),
+        Ok("<html>Cloudflare</html>"),
+        Ok("{}"),
+    ] {
+        let fetcher = FixtureFetcher {
+            responses: HashMap::from([(FREE_STEAM_KEYS_FEED_URL, response)]),
+        };
+        let mut database = Database::open_in_memory().unwrap();
+        let failed = check_sources(&fetcher, false, false, false, true).await;
+        assert_eq!(failed.failures.len(), 1);
+        assert_eq!(failed.failures[0].source, GiveawaySource::FreeSteamKeys);
+        assert_eq!(
+            failed.failures[0].reason,
+            if response.is_err() {
+                SourceFailureReason::Unknown
+            } else {
+                SourceFailureReason::InvalidFeed
+            }
+        );
+        assert!(failed.items.is_empty());
+        assert!(
+            apply_source_check(&mut database, failed)
+                .unwrap()
+                .baseline_deferred
+        );
+        assert!(
+            !database
+                .source_tracking_initialized(GiveawaySource::FreeSteamKeys)
+                .unwrap()
+        );
+        let restored = FixtureFetcher {
+            responses: HashMap::from([(
+                FREE_STEAM_KEYS_FEED_URL,
+                Ok(include_str!("fixtures/json/free-steam-keys.json")),
+            )]),
+        };
+        let result = check_sources(&restored, false, false, false, true).await;
+        let outcome = apply_source_check(&mut database, result).unwrap();
+        assert!(outcome.is_initial_synchronization);
+        assert!(outcome.new_items.is_empty());
+        assert_eq!(database.counts().unwrap().tracked_giveaways, 2);
+        assert_eq!(database.counts().unwrap().notification_history, 0);
+    }
+}
+
+#[tokio::test]
+async fn free_steam_keys_first_success_after_an_outage_on_an_existing_profile_is_silent() {
+    let mut database = Database::open_in_memory().unwrap();
+    let fetcher = FixtureFetcher {
+        responses: HashMap::from([
+            (
+                GIVEE_CLUB_FEED_URL,
+                Ok(include_str!("fixtures/html/givee-club.html")),
+            ),
+            (FREE_STEAM_KEYS_FEED_URL, Err("API offline")),
+        ]),
+    };
+    let initial = check_sources(&fetcher, true, false, false, false).await;
+    apply_source_check(&mut database, initial).unwrap();
+    let failed = check_sources(&fetcher, true, false, false, true).await;
+    apply_source_check(&mut database, failed).unwrap();
+    assert!(
+        !database
+            .source_tracking_initialized(GiveawaySource::FreeSteamKeys)
+            .unwrap()
+    );
+
+    let restored = FixtureFetcher {
+        responses: HashMap::from([(
+            FREE_STEAM_KEYS_FEED_URL,
+            Ok(include_str!("fixtures/json/free-steam-keys.json")),
+        )]),
+    };
+    let result = check_sources(&restored, false, false, false, true).await;
+    let outcome = apply_source_check(&mut database, result).unwrap();
+    assert!(!outcome.is_initial_synchronization);
+    assert!(outcome.new_items.is_empty());
+    assert!(
+        database
+            .source_tracking_initialized(GiveawaySource::FreeSteamKeys)
+            .unwrap()
+    );
+    assert_eq!(database.counts().unwrap().notification_history, 0);
+
+    let updated = FixtureFetcher {
+        responses: HashMap::from([(
+            FREE_STEAM_KEYS_FEED_URL,
+            Ok(
+                r#"[{"id":259,"title":"New Steam game","type":"Game","status":"Active","giveaway_url":"https://www.freesteamkeys.com/open/new-game"}]"#,
+            ),
+        )]),
+    };
+    let result = check_sources(&updated, false, false, false, true).await;
+    let outcome = apply_source_check(&mut database, result).unwrap();
+    assert_eq!(outcome.new_items.len(), 1);
+    assert_eq!(outcome.new_items[0].tracking_key(), "FreeSteamKeys:259");
+    assert_eq!(database.counts().unwrap().notification_history, 1);
+    let result = check_sources(&updated, false, false, false, true).await;
+    assert!(
+        apply_source_check(&mut database, result)
+            .unwrap()
+            .new_items
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn free_steam_keys_verified_empty_list_completes_baseline() {
+    let mut database = Database::open_in_memory().unwrap();
+    let fetcher = FixtureFetcher {
+        responses: HashMap::from([(FREE_STEAM_KEYS_FEED_URL, Ok("[]"))]),
+    };
+    let result = check_sources(&fetcher, false, false, false, true).await;
+    assert!(result.failures.is_empty());
+    let outcome = apply_source_check(&mut database, result).unwrap();
+    assert!(!outcome.baseline_deferred);
+    assert!(
+        database
+            .source_tracking_initialized(GiveawaySource::FreeSteamKeys)
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+#[ignore = "manual read-only check of the public FreeSteamKeys API; no profile or notifications"]
+async fn live_free_steam_keys_api_is_supported_by_production_parser() {
+    let fetcher = HttpPageFetcher::with_policy(30, 0).unwrap();
+    let result = check_sources(&fetcher, false, false, false, true).await;
+    assert!(result.failures.is_empty(), "{:?}", result.failures);
+    assert_eq!(result.checked_sources, [GiveawaySource::FreeSteamKeys]);
+    println!(
+        "FreeSteamKeys: {} readable active Steam giveaways",
+        result.items.len()
+    );
 }
 
 #[tokio::test]
@@ -52,7 +232,7 @@ async fn failure_of_one_source_keeps_results_from_the_other() {
         ]),
     };
 
-    let result = check_sources(&fetcher, true, true, false).await;
+    let result = check_sources(&fetcher, true, true, false, false).await;
 
     assert_eq!(result.items.len(), 2);
     assert_eq!(result.failures.len(), 1);
@@ -69,7 +249,7 @@ async fn disabled_source_is_not_requested() {
         )]),
     };
 
-    let result = check_sources(&fetcher, true, false, false).await;
+    let result = check_sources(&fetcher, true, false, false, false).await;
 
     assert_eq!(result.items.len(), 2);
     assert_eq!(result.checked_sources, [GiveawaySource::GiveeClub]);
@@ -101,13 +281,13 @@ async fn failed_initial_check_defers_baseline_and_prevents_false_notifications()
     };
     let mut database = Database::open_in_memory().unwrap();
 
-    let failed = check_sources(&failed_fetcher, true, true, false).await;
+    let failed = check_sources(&failed_fetcher, true, true, false, false).await;
     let deferred = apply_source_check(&mut database, failed).unwrap();
     assert!(deferred.baseline_deferred);
     assert!(!database.tracking_initialized().unwrap());
     assert_eq!(database.counts().unwrap().tracked_giveaways, 0);
 
-    let successful = check_sources(&successful_fetcher, true, true, false).await;
+    let successful = check_sources(&successful_fetcher, true, true, false, false).await;
     let baseline = apply_source_check(&mut database, successful).unwrap();
     assert!(baseline.is_initial_synchronization);
     assert!(!baseline.baseline_deferred);
@@ -144,13 +324,20 @@ async fn unrecognized_html_cannot_complete_a_baseline_and_replay_existing_giveaw
             Ok("<html><body>Temporarily unavailable</body></html>"),
         );
         let mut database = Database::open_in_memory().unwrap();
-        let check = check_sources(&FixtureFetcher { responses }, true, true, false).await;
+        let check = check_sources(&FixtureFetcher { responses }, true, true, false, false).await;
         assert_eq!(check.failures.len(), 1, "{failed_source}");
         let deferred = apply_source_check(&mut database, check).unwrap();
         assert!(deferred.baseline_deferred);
         assert!(!database.tracking_initialized().unwrap());
         assert_eq!(database.counts().unwrap().notification_history, 0);
-        let restored = check_sources(&FixtureFetcher { responses: valid }, true, true, false).await;
+        let restored = check_sources(
+            &FixtureFetcher { responses: valid },
+            true,
+            true,
+            false,
+            false,
+        )
+        .await;
         let baseline = apply_source_check(&mut database, restored).unwrap();
         assert!(baseline.is_initial_synchronization);
         assert!(baseline.new_items.is_empty());
@@ -174,7 +361,7 @@ async fn parse_failure_preserves_known_items_and_does_not_block_the_other_initia
             ),
         ]),
     };
-    let baseline = check_sources(&valid, true, true, false).await;
+    let baseline = check_sources(&valid, true, true, false, false).await;
     apply_source_check(&mut database, baseline).unwrap();
     let changed = FixtureFetcher {
         responses: HashMap::from([
@@ -187,7 +374,7 @@ async fn parse_failure_preserves_known_items_and_does_not_block_the_other_initia
             ),
         ]),
     };
-    let result = check_sources(&changed, true, true, false).await;
+    let result = check_sources(&changed, true, true, false, false).await;
     let outcome = apply_source_check(&mut database, result).unwrap();
     assert_eq!(outcome.failures.len(), 1);
     assert_eq!(outcome.failures[0].source, GiveawaySource::GiveeClub);
@@ -195,7 +382,7 @@ async fn parse_failure_preserves_known_items_and_does_not_block_the_other_initia
     assert_eq!(outcome.new_items[0].source, GiveawaySource::GamesForFarm);
     assert_eq!(database.counts().unwrap().tracked_giveaways, 4);
     assert_eq!(database.counts().unwrap().notification_history, 1);
-    let restored = check_sources(&valid, true, true, false).await;
+    let restored = check_sources(&valid, true, true, false, false).await;
     let outcome = apply_source_check(&mut database, restored).unwrap();
     assert!(outcome.failures.is_empty());
     assert!(outcome.new_items.is_empty());
@@ -208,7 +395,7 @@ async fn parse_failure_preserves_known_items_and_does_not_block_the_other_initia
 #[ignore = "manual network check of public feeds; no profile, database or notifications"]
 async fn live_source_markup_is_supported_by_production_parsers() {
     let fetcher = HttpPageFetcher::with_policy(30, 0).unwrap();
-    let result = check_sources(&fetcher, true, true, false).await;
+    let result = check_sources(&fetcher, true, true, false, false).await;
     assert!(result.failures.is_empty(), "{:?}", result.failures);
     for source in [GiveawaySource::GiveeClub, GiveawaySource::GamesForFarm] {
         let count = result
@@ -244,13 +431,13 @@ async fn newly_enabled_source_synchronizes_current_items_without_alerting_old_pu
         settings.givee_club_enabled = givee_first;
         settings.games_for_farm_enabled = !givee_first;
         database.update_settings(&settings).unwrap();
-        let initial = check_sources(&fetcher, givee_first, !givee_first, false).await;
+        let initial = check_sources(&fetcher, givee_first, !givee_first, false, false).await;
         apply_source_check(&mut database, initial).unwrap();
         assert_eq!(database.counts().unwrap().notification_history, 0);
         settings.givee_club_enabled = true;
         settings.games_for_farm_enabled = true;
         database.update_settings(&settings).unwrap();
-        let added = check_sources(&fetcher, true, true, false).await;
+        let added = check_sources(&fetcher, true, true, false, false).await;
         let outcome = apply_source_check(&mut database, added).unwrap();
         assert!(outcome.new_items.is_empty(), "givee_first={givee_first}");
         assert_eq!(database.counts().unwrap().tracked_giveaways, 3);

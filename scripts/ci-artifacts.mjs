@@ -61,7 +61,7 @@ export function requireVersions(pkg, config, cargoText, toolchainText) {
 }
 
 function command(executable, args, cwd=tauri) {
-  const result = spawnSync(executable, args, { cwd, encoding:'utf8', env:process.env });
+  const result = spawnSync(executable, args, { cwd, encoding:'utf8', env:process.env, windowsHide:true });
   if (result.error) throw result.error;
   assert.equal(result.status, 0, `${executable} failed: ${result.stderr}`);
   return result.stdout.trim();
@@ -101,7 +101,16 @@ export function collect(id) {
   assert.equal(binaryTarget(fs.readFileSync(executable)),id,'Built binary has the wrong architecture');
   let abi = null;
   let files;
-  if (process.platform === 'win32') files = [executable, onlyPackage(path.join(release,'bundle/nsis'),'.exe')];
+  if (process.platform === 'win32') {
+    files = [executable, onlyPackage(path.join(release,'bundle/nsis'),'.exe')];
+    if (id === 'windows-x86_64') {
+      const cli = path.join(release, 'giveaway-scout-cli.exe');
+      assert(fs.lstatSync(cli).isFile(), 'CLI payload must be a regular file');
+      assert.equal(binaryTarget(fs.readFileSync(cli)), id, 'CLI binary has the wrong architecture');
+      assert.equal(command(cli, ['--version']), `giveaway-scout-cli ${verified.version}`, 'CLI version mismatch');
+      files.push(cli);
+    }
+  }
   else if (process.platform === 'darwin') files = [onlyPackage(path.join(release,'bundle/dmg'),'.dmg')];
   else {
     const deb = onlyPackage(path.join(release,'bundle/deb'),'.deb');

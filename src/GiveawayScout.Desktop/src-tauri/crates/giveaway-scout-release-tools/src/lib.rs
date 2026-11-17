@@ -7,8 +7,6 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use base64::{Engine, engine::general_purpose::STANDARD};
-use minisign_verify::{PublicKey, Signature};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -103,52 +101,7 @@ pub struct Report {
     pub files: Vec<VerifiedArtifact>,
 }
 
-fn decode(text: &str) -> Result<String> {
-    let bytes = STANDARD
-        .decode(text.trim())
-        .map_err(|_| "Invalid base64".to_owned())?;
-    String::from_utf8(bytes).map_err(|_| "Invalid UTF-8 in signature/key".to_owned())
-}
-
-fn field<'a>(comment: &'a str, prefix: &str) -> Result<&'a str> {
-    let values: Vec<_> = comment
-        .split('\t')
-        .filter_map(|part| part.strip_prefix(prefix))
-        .collect();
-    if values.len() != 1 || values[0].is_empty() {
-        return Err(format!(
-            "Missing, empty or duplicate signed field: {prefix}"
-        ));
-    }
-    Ok(values[0])
-}
-
-/// Real Minisign verification, including its global signature, before reading
-/// trusted comments. Compatible with the runtime verifier in Tauri Updater.
-pub fn verify_signature(
-    key: &str,
-    signature: &str,
-    bytes: &[u8],
-    version: &str,
-    filename: &str,
-) -> Result<()> {
-    let key = PublicKey::decode(&decode(key)?).map_err(|_| "Invalid public key".to_owned())?;
-    let signature = Signature::decode(&decode(signature)?)
-        .map_err(|_| "Invalid signature encoding".to_owned())?;
-    key.verify(bytes, &signature, true)
-        .map_err(|_| "Package or trusted comment signature is invalid".to_owned())?;
-    let signed = field(signature.trusted_comment(), "version:")?;
-    let signed = Version::parse(signed.trim_start_matches('v'))
-        .map_err(|_| "Invalid signed version".to_owned())?;
-    let announced = Version::parse(version).map_err(|_| "Invalid announced version".to_owned())?;
-    if signed != announced {
-        return Err("Signed version does not match announced version".to_owned());
-    }
-    if field(signature.trusted_comment(), "file:")? != filename {
-        return Err("Signed filename does not match package filename".to_owned());
-    }
-    Ok(())
-}
+pub use giveaway_scout_updater::verify_signature;
 
 fn read_limited(path: &Path, maximum: u64) -> Result<Vec<u8>> {
     let file =
