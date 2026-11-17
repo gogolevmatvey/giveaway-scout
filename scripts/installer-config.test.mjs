@@ -70,6 +70,34 @@ test('component page keeps names wide and binds both hover descriptions after se
   ]) assert.throws(()=>verifyComponentInstallerScript(mutated));
 });
 
+test('updater handoff captures the native open error and accepts only exited or verified parents',()=>{
+  const source=fs.readFileSync(path.join(tauri,'installer/components.nsi'),'utf8');
+  const wait=source.match(/^Function ScoutWaitForParent\r?\n([\s\S]*?)^FunctionEnd/m)?.[1];
+  assert(wait);
+  // A native regression probe demonstrated that a second System::Call returned
+  // ERROR_FILE_EXISTS (80), losing OpenProcess's ERROR_INVALID_PARAMETER (87).
+  assert.match(wait,/OpenProcess\(i0x101000, i0, i r0\)p\.r1\?e'\r?\n\s*Pop \$ScoutWaitResult\r?\n\s*StrCpy \$ScoutWaitHandle \$1/);
+  assert.doesNotMatch(wait,/GetLastError/,'Only the captured native error may decide that the PID no longer exists');
+  assert.match(wait,/\$ScoutWaitHandle = 0[\s\S]*?\$ScoutWaitResult = 87 \$\{\|\} Return/);
+  const firstWait=wait.indexOf('WaitForSingleObject(p $ScoutWaitHandle, i0)');
+  const query=wait.indexOf('QueryFullProcessImageNameW');
+  assert(firstWait>=0 && firstWait<query,'Check the retained process handle before querying a possibly exited image');
+  const beforeQuery=wait.slice(firstWait,query);
+  assert.match(beforeQuery,/\$0 = 0[\s\S]*?CloseHandle\(p \$ScoutWaitHandle\)'\r?\n\s*Return/);
+  assert.match(beforeQuery,/\$0 != 258[\s\S]*?CloseHandle\(p \$ScoutWaitHandle\)'[\s\S]*?Call ScoutFail/,
+    'A failed zero-time wait must not be treated as an exited parent');
+  const queryFailure=wait.match(/\$\{If\} \$2 = 0\r?\n([\s\S]*?)\$\{EndIf\}/)?.[1];
+  assert(queryFailure);
+  assert.match(queryFailure,/WaitForSingleObject\(p \$ScoutWaitHandle, i0\)i\.r0/);
+  assert.match(queryFailure,/StrCpy \$ScoutWaitResult \$0\r?\n\s*System::Call 'kernel32::CloseHandle\(p \$ScoutWaitHandle\)'/);
+  assert.match(queryFailure,/\$ScoutWaitResult = 0 \$\{\|\} Return/);
+  assert.match(queryFailure,/Call ScoutFail/,'A live process with an unreadable image must still be rejected');
+  assert.equal((wait.match(/OpenProcess\(/g)??[]).length,1,'Rechecking the same handle must not follow a reused PID');
+  assert.match(wait,/\$ScoutWaitPath != "\$INSTDIR\\\$\{MAINBINARYNAME\}\.exe"\r?\n\s*\$\{AndIf\} \$ScoutWaitPath != "\$INSTDIR\\giveaway-scout-cli\.exe"/);
+  assert.match(wait,/WaitForSingleObject\(p \$ScoutWaitHandle, i30000\)i\.r0'\r?\n\s*StrCpy \$ScoutWaitResult \$0\r?\n\s*System::Call 'kernel32::CloseHandle\(p \$ScoutWaitHandle\)'/);
+  assert.doesNotMatch(wait,/TerminateProcess|RmShutdown/);
+});
+
 test('component instructions and descriptions are localized and Russian uses guillemets',()=>{
   const hooks=fs.readFileSync(path.join(tauri,nsis.installerHooks),'utf8');
   assert.equal(verifyComponentInstallerTranslations(hooks).localizedComponentInstructions,true);

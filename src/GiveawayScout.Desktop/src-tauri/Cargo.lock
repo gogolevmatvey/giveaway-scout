@@ -1668,7 +1668,7 @@ dependencies = [
 
 [[package]]
 name = "giveaway-scout"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "base64 0.22.1",
  "fern",
@@ -1709,7 +1709,7 @@ dependencies = [
 
 [[package]]
 name = "giveaway-scout-cli"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "fern",
  "giveaway-scout-core",
@@ -1791,7 +1791,7 @@ dependencies = [
 
 [[package]]
 name = "giveaway-scout-runtime"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "fern",
  "giveaway-scout-core",

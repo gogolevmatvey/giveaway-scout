@@ -1,7 +1,7 @@
 [package]
 name = "giveaway-scout-runtime"
 license = "MIT"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2024"
 rust-version = "1.99.1"
 publish = false

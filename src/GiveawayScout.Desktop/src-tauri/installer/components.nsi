@@ -882,21 +882,37 @@ Function ScoutWaitForParent
     Push "$(ScoutInvalidParent)"
     Call ScoutFail
   ${EndIf}
-  System::Call 'kernel32::OpenProcess(i0x101000, i0, i r0)p.s'
-  Pop $ScoutWaitHandle
+  ; System cleanup can overwrite the thread's last error before another Call.
+  ; ?e captures OpenProcess's error immediately and pushes only that error here.
+  System::Call 'kernel32::OpenProcess(i0x101000, i0, i r0)p.r1?e'
+  Pop $ScoutWaitResult
+  StrCpy $ScoutWaitHandle $1
   ${If} $ScoutWaitHandle = 0
-    System::Call 'kernel32::GetLastError()i.r0'
     ; ERROR_INVALID_PARAMETER means the parent already exited.
-    ${IfThen} $0 = 87 ${|} Return ${|}
+    ${IfThen} $ScoutWaitResult = 87 ${|} Return ${|}
+    Push "$(ScoutInvalidParent)"
+    Call ScoutFail
+  ${EndIf}
+  ; A retained process object can already be signaled even though its PID opens.
+  System::Call 'kernel32::WaitForSingleObject(p $ScoutWaitHandle, i0)i.r0'
+  ${If} $0 = 0
+    System::Call 'kernel32::CloseHandle(p $ScoutWaitHandle)'
+    Return
+  ${ElseIf} $0 != 258
+    System::Call 'kernel32::CloseHandle(p $ScoutWaitHandle)'
     Push "$(ScoutInvalidParent)"
     Call ScoutFail
   ${EndIf}
   StrCpy $ScoutWaitSize ${NSIS_MAX_STRLEN}
-  System::Call 'kernel32::QueryFullProcessImageNameW(p $ScoutWaitHandle, i0, w .s, *i $ScoutWaitSize)i.s'
-  Pop $ScoutWaitResult
-  Pop $ScoutWaitPath
-  ${If} $ScoutWaitResult = 0
+  System::Call 'kernel32::QueryFullProcessImageNameW(p $ScoutWaitHandle, i0, w .r1, *i $ScoutWaitSize)i.r2'
+  StrCpy $ScoutWaitPath $1
+  ${If} $2 = 0
+    ; The parent may exit between the zero-time wait and the image query.
+    ; Accept only a signaled object on this same handle, never a new PID lookup.
+    System::Call 'kernel32::WaitForSingleObject(p $ScoutWaitHandle, i0)i.r0'
+    StrCpy $ScoutWaitResult $0
     System::Call 'kernel32::CloseHandle(p $ScoutWaitHandle)'
+    ${IfThen} $ScoutWaitResult = 0 ${|} Return ${|}
     Push "$(ScoutInvalidParent)"
     Call ScoutFail
   ${EndIf}
@@ -906,8 +922,8 @@ Function ScoutWaitForParent
     Push "$(ScoutInvalidParent)"
     Call ScoutFail
   ${EndIf}
-  System::Call 'kernel32::WaitForSingleObject(p $ScoutWaitHandle, i30000)i.s'
-  Pop $ScoutWaitResult
+  System::Call 'kernel32::WaitForSingleObject(p $ScoutWaitHandle, i30000)i.r0'
+  StrCpy $ScoutWaitResult $0
   System::Call 'kernel32::CloseHandle(p $ScoutWaitHandle)'
   ${If} $ScoutWaitResult != 0
     Push "$(ScoutInvalidParent)"
