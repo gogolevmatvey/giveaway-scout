@@ -22,6 +22,7 @@ import {
   checkForUpdates,
   clearGiveawayData,
   chooseLogDirectory,
+  dismissUpdate,
   getAppState,
   getLoggingState,
   getNotificationHistoryPage,
@@ -98,9 +99,14 @@ function App() {
   const openLogDirectoryMutation = useMutation({ mutationFn: openLogDirectory });
   const checkUpdatesMutation = useMutation({ mutationFn: checkForUpdates, onSettled: () => updates.refetch() });
   const installUpdateMutation = useMutation({ mutationFn: installUpdate, onSettled: () => updates.refetch() });
+  const dismissUpdateMutation = useMutation({
+    mutationFn: dismissUpdate,
+    onSuccess: snapshot => queryClient.setQueryData(["updates"], snapshot),
+    onSettled: () => updates.refetch(),
+  });
   const updatePhase = updates.data?.phase;
   const updateInstalling = updatePhase === "downloading" || updatePhase === "installing" || installUpdateMutation.isPending;
-  const updateBusy = updateInstalling || updatePhase === "checking" || checkUpdatesMutation.isPending;
+  const updateBusy = updateInstalling || updatePhase === "checking" || checkUpdatesMutation.isPending || dismissUpdateMutation.isPending;
   const storageReady = storageState.isSuccess && !storageState.data.initialSyncChoiceRequired;
   const checkMutation = useMutation({
     mutationFn: checkNow,
@@ -368,8 +374,48 @@ function App() {
     }
   };
 
+  const dismissUpdateBanner = () => {
+    const candidate = updates.data?.candidate;
+    if (candidate && !updateInstalling && !dismissUpdateMutation.isPending) dismissUpdateMutation.mutate(candidate.token);
+  };
+
   return (
     <main className="app-shell" data-app="giveaway-scout">
+      {updates.data?.mode === "enabled" && updates.data.candidate && !updates.data.bannerDismissed && (
+        <section className="update-banner" role="status" aria-busy={dismissUpdateMutation.isPending}>
+          <Bell size={20} aria-hidden="true" />
+          <div className="update-banner-message">
+            <strong>{t("updateAvailable", { version: updates.data.candidate.version })}</strong>
+            {updatePhase === "downloading" && <span>{t("downloadingUpdate", {
+              progress: `${formatBytes(updates.data.downloadedBytes, i18n.language)}${updates.data.totalBytes === null ? "" : ` / ${formatBytes(updates.data.totalBytes, i18n.language)}`}`,
+            })}</span>}
+            {updatePhase === "installing" && <span>{t("installingUpdate")}</span>}
+            {(updates.data.lastError || installUpdateMutation.isError) && (
+              <span className="setting-error" role="alert">{t("updateFailed")}</span>
+            )}
+            {dismissUpdateMutation.isPending && <span>{t("dismissingUpdateNotification")}</span>}
+            {dismissUpdateMutation.isError && dismissUpdateMutation.variables === updates.data.candidate.token && (
+              <span className="setting-error" role="alert">{t("dismissUpdateNotificationFailed")}</span>
+            )}
+          </div>
+          <button
+            className="primary-button update-banner-action"
+            type="button"
+            disabled={updateBusy || isChecking || clearDataBlocked || clearDataMutation.isPending}
+            onClick={confirmInstallUpdate}
+          >
+            {updateInstalling && <LoaderCircle className="spinner" size={16} aria-hidden="true" />}
+            {t(updateInstalling ? "updating" : "updateNow")}
+          </button>
+          <button className="update-banner-dismiss" type="button"
+            aria-label={t("dismissUpdateNotification")} title={t("dismissUpdateNotification")}
+            disabled={updateInstalling || dismissUpdateMutation.isPending}
+            onClick={dismissUpdateBanner}>
+            <X size={18} aria-hidden="true" />
+          </button>
+        </section>
+      )}
+
       <section className="status-panel" aria-live="polite">
         <div className={`connection-dot ${hasStatusError ? "error" : ""}`} />
         <div>
@@ -416,31 +462,6 @@ function App() {
           </button>
         </div>
       </section>
-
-      {updates.data?.mode === "enabled" && updates.data.candidate && (
-        <section className="update-banner" role="status">
-          <Bell size={20} aria-hidden="true" />
-          <div className="update-banner-message">
-            <strong>{t("updateAvailable", { version: updates.data.candidate.version })}</strong>
-            {updatePhase === "downloading" && <span>{t("downloadingUpdate", {
-              progress: `${formatBytes(updates.data.downloadedBytes, i18n.language)}${updates.data.totalBytes === null ? "" : ` / ${formatBytes(updates.data.totalBytes, i18n.language)}`}`,
-            })}</span>}
-            {updatePhase === "installing" && <span>{t("installingUpdate")}</span>}
-            {(updates.data.lastError || installUpdateMutation.isError) && (
-              <span className="setting-error" role="alert">{t("updateFailed")}</span>
-            )}
-          </div>
-          <button
-            className="primary-button"
-            type="button"
-            disabled={updateBusy || isChecking || clearDataBlocked || clearDataMutation.isPending}
-            onClick={confirmInstallUpdate}
-          >
-            {updateInstalling && <LoaderCircle className="spinner" size={16} aria-hidden="true" />}
-            {t(updateInstalling ? "updating" : "updateNow")}
-          </button>
-        </section>
-      )}
 
       {storageState.data?.databaseRecovery && (
         <section className="recovery-panel" role="alert">
@@ -1009,6 +1030,15 @@ function App() {
 
               <section className="settings-panel" role="tabpanel" id="settings-panel-updatesData"
                 aria-labelledby="settings-tab-updatesData" hidden={settingsSection !== "updatesData"}>
+              <label className="setting-card check-setting check-setting-details">
+                <input id="automatic-update-checks" type="checkbox"
+                  checked={settingsDraft.automaticUpdateChecks}
+                  onChange={event => setSettingsDraft({...settingsDraft, automaticUpdateChecks: event.target.checked})} />
+                <span>
+                  <strong>{t("automaticUpdateChecks")}</strong>
+                  <small>{t("automaticUpdateChecksDescription")}</small>
+                </span>
+              </label>
               <fieldset className="settings-group setting-card-block app-updates">
                 <legend>{t("appUpdates")}</legend>
                 <p>{t("installedVersion", { version: updates.data?.currentVersion ?? appState.data?.version ?? "—" })}</p>

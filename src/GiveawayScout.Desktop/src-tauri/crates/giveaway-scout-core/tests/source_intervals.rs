@@ -472,7 +472,7 @@ fn published_v110_schema9_migrates_intervals_without_losing_or_repeating_history
                         |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
                     )
                     .unwrap(),
-                (15, 15)
+                (16, 16)
             );
         }
     }

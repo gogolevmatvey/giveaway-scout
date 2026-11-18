@@ -5,6 +5,7 @@ import {
   checkForUpdates,
   clearGiveawayData,
   chooseLogDirectory,
+  dismissUpdate,
   getAppState,
   getLoggingState,
   getNotificationHistoryPage,
@@ -38,6 +39,17 @@ describe("desktop API", () => {
     vi.mocked(invoke).mockResolvedValue(undefined);
     await installUpdate("candidate-token");
     expect(invoke).toHaveBeenCalledWith("install_update", { token: "candidate-token", confirmed: true });
+  });
+
+  it("dismisses only the displayed candidate and preserves a storage failure for retry", async () => {
+    const snapshot = { mode: "enabled", phase: "available", bannerDismissed: true, candidate: { token: "candidate-token", version: "2.0.0", notes: "Release notes" } };
+    const error = new Error("The preference could not be saved");
+    vi.mocked(invoke).mockRejectedValueOnce(error).mockResolvedValueOnce(snapshot);
+    await expect(dismissUpdate("candidate-token")).rejects.toBe(error);
+    await expect(dismissUpdate("candidate-token")).resolves.toEqual(snapshot);
+    expect(invoke).toHaveBeenNthCalledWith(1, "dismiss_update", { token: "candidate-token" });
+    expect(invoke).toHaveBeenNthCalledWith(2, "dismiss_update", { token: "candidate-token" });
+    expect(invoke).not.toHaveBeenCalledWith("install_update", expect.anything());
   });
   it("maps native macOS notification errors to localized messages", () => {
     expect(notificationErrorKey("MACOS_NOTIFICATION_APP_BUNDLE_REQUIRED")).toBe("testNotificationMacosBundleRequired");
@@ -83,6 +95,7 @@ describe("desktop API", () => {
         autostartTarget: "gui" as const,
         startInTray: true,
         keepRunningInTray: false,
+        automaticUpdateChecks: true,
         languageCode: null,
         verboseLogging: false,
         logMaxFileSizeMb: 2,
@@ -190,6 +203,7 @@ describe("desktop API", () => {
       autostartTarget: "gui" as const,
       startInTray: true,
       keepRunningInTray: false,
+      automaticUpdateChecks: false,
       languageCode: "en" as const,
       verboseLogging: false,
       logMaxFileSizeMb: 25,

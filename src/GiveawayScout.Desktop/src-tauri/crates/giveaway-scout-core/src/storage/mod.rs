@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS settings (
     epic_games_notifications_enabled INTEGER NOT NULL DEFAULT 1 CHECK (epic_games_notifications_enabled IN (0, 1)),
     gog_notifications_enabled INTEGER NOT NULL DEFAULT 1 CHECK (gog_notifications_enabled IN (0, 1)),
     notification_sound_enabled INTEGER NOT NULL CHECK (notification_sound_enabled IN (0, 1)),
+    automatic_update_checks INTEGER NOT NULL DEFAULT 1 CHECK (automatic_update_checks IN (0, 1)),
     start_at_login INTEGER NOT NULL CHECK (start_at_login IN (0, 1)),
     autostart_target TEXT NOT NULL DEFAULT 'gui' CHECK (autostart_target IN ('gui', 'cli')),
     start_in_tray INTEGER NOT NULL DEFAULT 0 CHECK (start_in_tray IN (0, 1)),
@@ -265,6 +266,8 @@ impl Database {
         let add_free_steam_keys = !self.settings_column_exists("free_steam_keys_enabled")?;
         let add_start_in_tray = !self.settings_column_exists("start_in_tray")?;
         let add_autostart_target = !self.settings_column_exists("autostart_target")?;
+        let add_automatic_update_checks =
+            !self.settings_column_exists("automatic_update_checks")?;
         let add_log_max_file_size = !self.settings_column_exists("log_max_file_size_mb")?;
         let add_log_file_count = !self.settings_column_exists("log_file_count")?;
         let add_log_directory = !self.settings_column_exists("log_directory")?;
@@ -475,6 +478,16 @@ impl Database {
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at_utc) VALUES (15, ?1)",
             [now_utc()?],
         )?;
+        if add_automatic_update_checks {
+            transaction.execute(
+                "ALTER TABLE settings ADD COLUMN automatic_update_checks INTEGER NOT NULL DEFAULT 1 CHECK (automatic_update_checks IN (0, 1))",
+                [],
+            )?;
+        }
+        transaction.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at_utc) VALUES (16, ?1)",
+            [now_utc()?],
+        )?;
         transaction.commit()?;
         Ok(())
     }
@@ -498,8 +511,8 @@ impl Database {
                 givee_club_enabled, games_for_farm_enabled,
                 notification_sound_enabled, start_at_login, keep_running_in_tray,
                 language_code, verbose_logging, initial_sync_mode, updated_at_utc, start_in_tray,
-                log_max_file_size_mb, log_file_count, log_directory
-            ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"#,
+                log_max_file_size_mb, log_file_count, log_directory, automatic_update_checks
+            ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)"#,
             params![
                 defaults.check_interval_minutes,
                 defaults.http_timeout_seconds,
@@ -519,6 +532,7 @@ impl Database {
                 defaults.log_max_file_size_mb,
                 defaults.log_file_count,
                 defaults.log_directory,
+                defaults.automatic_update_checks,
             ],
         )?;
         Ok(())
@@ -533,7 +547,7 @@ impl Database {
                     steam_notifications_enabled, epic_games_notifications_enabled, zeros_enabled,
                     start_in_tray, gog_notifications_enabled,
                     log_max_file_size_mb, log_file_count, log_directory, free_steam_keys_enabled,
-                    source_check_intervals_json, autostart_target
+                    source_check_intervals_json, autostart_target, automatic_update_checks
                 FROM settings WHERE id = 1"#,
                 [],
                 |row| {
@@ -560,6 +574,7 @@ impl Database {
                         epic_games_notifications_enabled: row.get(12)?,
                         gog_notifications_enabled: row.get(15)?,
                         notification_sound_enabled: row.get(3)?,
+                        automatic_update_checks: row.get(22)?,
                         start_at_login: row.get(4)?,
                         autostart_target: match row.get::<_, String>(21)?.as_str() {
                             "cli" => AutostartTarget::Cli,
@@ -667,7 +682,8 @@ impl Database {
                 log_directory = ?20,
                 free_steam_keys_enabled = ?21,
                 source_check_intervals_json = ?22,
-                autostart_target = ?23
+                autostart_target = ?23,
+                automatic_update_checks = ?24
             WHERE id = 1"#,
             params![
                 settings.check_interval_minutes,
@@ -695,6 +711,7 @@ impl Database {
                 settings.free_steam_keys_enabled,
                 serde_json::to_string(&settings.source_check_intervals)?,
                 settings.autostart_target.storage_name(),
+                settings.automatic_update_checks,
             ],
         )?;
         let choosing_initial_mode = previous.initial_sync_mode.is_none()

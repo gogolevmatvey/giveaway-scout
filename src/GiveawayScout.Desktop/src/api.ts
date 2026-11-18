@@ -20,6 +20,7 @@ export interface UpdateSnapshot {
   phase: "idle" | "checking" | "available" | "downloading" | "installing" | "failed";
   currentVersion: string;
   candidate: UpdateCandidate | null;
+  bannerDismissed: boolean;
   downloadedBytes: number;
   totalBytes: number | null;
   lastCheckedAtUtc: string | null;
@@ -28,6 +29,7 @@ export interface UpdateSnapshot {
 
 export function getUpdateState(): Promise<UpdateSnapshot> { return invoke("get_update_state"); }
 export function checkForUpdates(): Promise<UpdateSnapshot> { return invoke("check_for_updates"); }
+export function dismissUpdate(token: string): Promise<UpdateSnapshot> { return invoke("dismiss_update", { token }); }
 export function installUpdate(token: string): Promise<void> { return invoke("install_update", { token, confirmed: true }); }
 
 export interface AppState {
@@ -55,6 +57,7 @@ export interface AppSettings {
   autostartTarget: "gui" | "cli";
   startInTray: boolean;
   keepRunningInTray: boolean;
+  automaticUpdateChecks: boolean;
   languageCode: "ru" | "en" | null;
   verboseLogging: boolean;
   logMaxFileSizeMb: number;

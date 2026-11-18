@@ -87,6 +87,18 @@ fn settings_round_trip_utf8_nested_intervals_and_validation() {
     let before = document(&cli(&profile, &["config", "show"]));
     assert_eq!(before["autostartTarget"], "gui");
     assert_eq!(before["startAtLogin"], false);
+    assert_eq!(before["automaticUpdateChecks"], true);
+    for enabled in ["false", "true"] {
+        let changed = document(&cli(
+            &profile,
+            &["config", "set", "automaticUpdateChecks", enabled],
+        ));
+        assert_eq!(changed["automaticUpdateChecks"], enabled == "true");
+        assert_eq!(
+            document(&cli(&profile, &["config", "show"]))["automaticUpdateChecks"],
+            enabled == "true"
+        );
+    }
     assert_eq!(
         document(&cli(
             &profile,

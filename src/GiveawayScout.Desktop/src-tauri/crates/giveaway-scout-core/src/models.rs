@@ -164,6 +164,9 @@ pub struct AppSettings {
     #[serde(default = "enabled_by_default")]
     pub gog_notifications_enabled: bool,
     pub notification_sound_enabled: bool,
+    /// Applies only to background application update checks in the GUI.
+    #[serde(default = "enabled_by_default")]
+    pub automatic_update_checks: bool,
     pub start_at_login: bool,
     #[serde(default)]
     pub autostart_target: AutostartTarget,
@@ -266,6 +269,7 @@ impl Default for AppSettings {
             epic_games_notifications_enabled: true,
             gog_notifications_enabled: true,
             notification_sound_enabled: true,
+            automatic_update_checks: true,
             start_at_login: false,
             autostart_target: AutostartTarget::Gui,
             start_in_tray: false,

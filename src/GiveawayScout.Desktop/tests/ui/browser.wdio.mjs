@@ -1004,6 +1004,95 @@ test('per-source status events update immediately and manual checks acknowledge 
   assert.equal(await browser.$('[data-source="zeros"] .source-phase').getText(),'Disabled');
 });
 
+test('update notification remains visible through a failed dismissal and announces the next version',async()=>{
+  await browser.url(server.url+'?update');
+  await browser.$('.update-banner').waitForDisplayed();
+  const close=browser.$('.update-banner-dismiss');
+  assert.equal(await close.getAttribute('aria-label'),'Dismiss update notification');
+  assert.equal(await close.getAttribute('title'),'Dismiss update notification');
+  await browser.execute(()=>{window.__uiTest.pauseDismissUpdate=true;window.__uiTest.failDismissUpdate=1;});
+  await close.click();
+  await browser.waitUntil(async()=>await browser.execute(()=>typeof window.__uiTest.finishDismissUpdate==='function'));
+  assert.equal(await close.isEnabled(),false);
+  assert.match(await browser.$('.update-banner').getText(),/Dismissing update notification/);
+  assert.equal(await browser.$('.update-banner-action').isEnabled(),false);
+  await browser.execute(()=>window.__uiTest.finishDismissUpdate());
+  await browser.waitUntil(async()=>await browser.$('.update-banner [role="alert"]').isDisplayed());
+  assert.match(await browser.$('.update-banner [role="alert"]').getText(),/could not be dismissed/);
+  assert.equal(await close.isEnabled(),true);
+  assert.equal(await browser.execute(()=>window.__uiTest.calls.filter(call=>call.command==='dismiss_update').length),1);
+  await browser.execute(()=>{window.__uiTest.pauseDismissUpdate=false;});
+  await close.click();
+  await browser.$('.update-banner').waitForExist({reverse:true});
+  await browser.$('.header-button').click();await selectSettingsSection('updatesData');
+  assert.match(await browser.$('.update-candidate').getText(),/2\.0\.0/);
+  assert.equal(await browser.$('.update-notes').getText(),'Fixture update');
+  await browser.$('.app-updates .secondary-button').click();
+  await browser.waitUntil(async()=>await browser.execute(()=>window.__uiTest.calls.some(call=>call.command==='check_for_updates')));
+  assert.equal(await browser.$('.update-banner').isExisting(),false,'checking the same version keeps the notification dismissed');
+  await browser.execute(()=>{window.__uiTest.nextUpdateCandidate={token:'next-update',version:'2.1.0',notes:'Next release notes'};});
+  await browser.$('.app-updates .secondary-button').waitForEnabled();
+  await browser.$('.app-updates .secondary-button').click();
+  await browser.$('.dialog-actions .secondary-button').click();
+  await browser.$('[role="dialog"]').waitForExist({reverse:true});
+  await browser.$('.update-banner').waitForDisplayed();
+  assert.match(await browser.$('.update-banner').getText(),/2\.1\.0/);
+  const dismissals=await browser.execute(()=>window.__uiTest.calls.filter(call=>call.command==='dismiss_update'));
+  assert.deepEqual(dismissals.map(call=>call.args),[{token:'fixture-update'},{token:'fixture-update'}]);
+});
+
+test('a persisted dismissal hides only the banner and keeps update details in Settings',async()=>{
+  await browser.url(server.url+'?update&dismissedUpdate');
+  await browser.$('.header-button').waitForEnabled();
+  assert.equal(await browser.$('.update-banner').isExisting(),false);
+  await browser.$('.header-button').click();await selectSettingsSection('updatesData');
+  assert.match(await browser.$('.update-candidate').getText(),/2\.0\.0/);
+  assert.equal(await browser.$('.update-notes').getText(),'Fixture update');
+  assert.equal(await browser.$('.update-candidate .primary-button').isEnabled(),true);
+});
+
+test('automatic update checks use the saved draft and manual check/install remain available when disabled',async()=>{
+  for(const language of ['en','ru']) {
+    await browser.url(server.url+'?update');
+    await browser.$('.header-button').waitForEnabled();
+    if(language==='ru') {
+      await browser.$('.header-button').click();await selectSettingsSection('application');await browser.$('button=Русский').click();
+      await browser.$('.dialog-actions .primary-button').click();await browser.$('[role="dialog"]').waitForExist({reverse:true});
+    }
+    await browser.$('.header-button').click();await selectSettingsSection('updatesData');
+    const toggle=browser.$('#automatic-update-checks');
+    assert.equal(await toggle.isSelected(),true);
+    assert.match(await toggle.parentElement().getText(),language==='ru'?/Автоматически проверять обновления/:/Automatically check for updates/);
+    assert.match(await toggle.parentElement().getText(),language==='ru'?/При запуске приложения и раз в сутки/:/At application startup and once a day/);
+    await toggle.click();
+    assert.equal(await browser.execute(()=>window.__uiTest.settings.automaticUpdateChecks),true,'editing the draft does not save immediately');
+    await browser.$('.dialog-actions .secondary-button').click();
+    await browser.$('.settings-close-actions .secondary-button:last-child').click();
+    await browser.$('[role="dialog"]').waitForExist({reverse:true});
+    await browser.$('.header-button').click();await selectSettingsSection('updatesData');
+    assert.equal(await toggle.isSelected(),true,'discard restores the saved preference');
+    await toggle.click();await browser.$('.dialog-actions .primary-button').click();
+    await browser.$('[role="dialog"]').waitForExist({reverse:true});
+    await browser.$('.header-button').click();await selectSettingsSection('updatesData');
+    assert.equal(await toggle.isSelected(),false);
+    assert.equal(await browser.execute(()=>window.__uiTest.settings.automaticUpdateChecks),false);
+    await browser.$('.app-updates .secondary-button').click();
+    await browser.waitUntil(async()=>await browser.execute(()=>window.__uiTest.calls.some(call=>call.command==='check_for_updates')));
+    await browser.$('.update-candidate .primary-button').waitForEnabled();
+    assert.equal(await browser.$('.update-candidate .primary-button').isEnabled(),true);
+    await browser.$('.dialog-actions .secondary-button').click();await browser.$('[role="dialog"]').waitForExist({reverse:true});
+    assert.equal(await browser.$('.update-banner-dismiss').getAttribute('aria-label'),language==='ru'?'Скрыть уведомление':'Dismiss update notification');
+    await browser.execute(()=>{window.confirm=()=>true;});await browser.$('.update-banner-action').click();
+    await browser.waitUntil(async()=>await browser.execute(()=>window.__uiTest.calls.some(call=>call.command==='install_update')));
+    await browser.waitUntil(async()=>!(await browser.$('.update-banner-dismiss').isEnabled()));
+    assert.equal(await browser.$('.update-banner').isDisplayed(),true);
+    await browser.execute(()=>{window.__uiTest.update.phase='installing';});
+    await browser.waitUntil(async()=>(await browser.$('.update-banner').getText()).includes(language==='ru'?'Устанавливаем обновление':'Installing update'));
+    assert.equal(await browser.$('.update-banner-dismiss').isEnabled(),false);
+    assert.equal(await browser.execute(()=>window.__uiTest.calls.some(call=>call.command==='dismiss_update')),false);
+  }
+});
+
 test('minimum and original window sizes keep all source/history controls reachable with an update in both languages',async()=>{
   try {
     await browser.url(server.url+'?history&update');
@@ -1014,20 +1103,30 @@ test('minimum and original window sizes keep all source/history controls reachab
         await browser.$('.header-button').click();await selectSettingsSection('application');await browser.$('button=Русский').click();
         await browser.$('.dialog-actions .primary-button').click();await browser.$('[role="dialog"]').waitForExist({reverse:true});
       }
-      for(const width of [960,760]) {
-        await browser.setWindowSize(width,600+chromeHeight);
+      for(const [width,height] of [[1100,740],[960,600],[760,600]]) {
+        await browser.setWindowSize(width,height+chromeHeight);
         const geometry=await browser.execute(()=>{
-          const selectors=['.status-panel','.update-banner','.source-actions','.history-toolbar'];
+          const selectors=['.update-banner','.status-panel','.source-actions','.history-toolbar','.update-banner-action','.update-banner-dismiss'];
           const rects=selectors.map(selector=>{const rect=document.querySelector(selector).getBoundingClientRect();return{selector,top:rect.top,bottom:rect.bottom,left:rect.left,right:rect.right};});
           const sourceList=document.querySelector('.source-list');sourceList.scrollTop=sourceList.scrollHeight;
           return{width:innerWidth,height:innerHeight,scroll:document.documentElement.scrollHeight>innerHeight,rects,zeros:document.querySelector('[data-source="zeros"] .source-row').getBoundingClientRect().bottom,sourceBottom:sourceList.getBoundingClientRect().bottom,historyHeight:document.querySelector('.history-list').clientHeight};
         });
         assert.equal(geometry.scroll,false,JSON.stringify(geometry));
         assert.ok(geometry.rects.every(rect=>rect.top>=0&&rect.bottom<=geometry.height&&rect.left>=0&&rect.right<=geometry.width),JSON.stringify(geometry));
+        assert.ok(geometry.rects[0].bottom<=geometry.rects[1].top,JSON.stringify(geometry));
+        assert.ok(geometry.rects[4].right<=geometry.rects[5].left,JSON.stringify(geometry));
+        assert.ok(geometry.rects[5].right-geometry.rects[5].left<=40,JSON.stringify(geometry));
         assert.ok(geometry.zeros<=geometry.sourceBottom+1,JSON.stringify(geometry));
         assert.ok(geometry.historyHeight>=80,JSON.stringify(geometry));
         assert.equal(await browser.$('.source-actions .primary-button').isDisplayed(),true);
         assert.equal(await browser.$('.sources-card .test-notification-button').isExisting(),false);
+        if(process.env.GIVEAWAY_SCOUT_BROWSER_REPORT) {
+          await mkdir(process.env.GIVEAWAY_SCOUT_BROWSER_REPORT,{recursive:true});
+          await browser.saveScreenshot(path.join(process.env.GIVEAWAY_SCOUT_BROWSER_REPORT,language+'-'+width+'x'+height+'-update-banner.png'));
+          await browser.$('.header-button').click();await selectSettingsSection('updatesData');
+          await browser.saveScreenshot(path.join(process.env.GIVEAWAY_SCOUT_BROWSER_REPORT,language+'-'+width+'x'+height+'-updates-settings.png'));
+          await browser.$('.dialog-actions .secondary-button').click();await browser.$('[role="dialog"]').waitForExist({reverse:true});
+        }
       }
     }
   } finally {await browser.setWindowSize(1100,900);}

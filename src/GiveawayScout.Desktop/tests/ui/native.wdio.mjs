@@ -861,12 +861,12 @@ test('native WebView2 layout keeps source and history controls reachable at orig
       const settings=(await state()).settings;
       await invoke('update_settings',{settings:{...settings,languageCode:language}});
       await waitUntil(async()=>await layoutApp.browser.execute(()=>document.documentElement.lang)===language,'native layout language '+language);
-      for(const width of [960,760]) {
-        await layoutApp.browser.setWindowRect(originalRect.x,originalRect.y,width+chromeWidth,600+chromeHeight);
-        await waitUntil(async()=>await layoutApp.browser.execute(({width})=>innerWidth===width&&innerHeight===600,{width}),'exact native client size '+width+'x600');
+      for(const [width,height] of [[1100,740],[960,600],[760,600]]) {
+        await layoutApp.browser.setWindowRect(originalRect.x,originalRect.y,width+chromeWidth,height+chromeHeight);
+        await waitUntil(async()=>await layoutApp.browser.execute(({width,height})=>innerWidth===width&&innerHeight===height,{width,height}),'exact native client size '+width+'x'+height);
         const geometry=await layoutApp.browser.execute(()=>{
           const bounds=element=>{const rect=element.getBoundingClientRect();return{top:rect.top,bottom:rect.bottom,left:rect.left,right:rect.right,width:rect.width,height:rect.height};};
-          const controls=['.status-panel','.update-banner','.source-actions','.history-toolbar'].map(selector=>({selector,...bounds(document.querySelector(selector))}));
+          const controls=['.update-banner','.status-panel','.source-actions','.history-toolbar','.update-banner-action','.update-banner-dismiss'].map(selector=>({selector,...bounds(document.querySelector(selector))}));
           const sourceList=document.querySelector('.source-list');sourceList.scrollTop=sourceList.scrollHeight;
           const lastSource=bounds(document.querySelector('[data-source="zeros"] .source-row'));
           const sourceBounds=bounds(sourceList);
@@ -882,20 +882,55 @@ test('native WebView2 layout keeps source and history controls reachable at orig
         });
         measurements.push(geometry);
         await fs.writeFile(path.join(layoutReport,'bounds.json'),JSON.stringify({banner:'display-only Rust fixture through real IPC; real WebView2 and OS window resizing',measurements},null,2)+'\n');
-        await layoutApp.browser.saveScreenshot(path.join(layoutReport,language+'-'+width+'x600.png'));
+        await layoutApp.browser.saveScreenshot(path.join(layoutReport,language+'-'+width+'x'+height+'.png'));
         assert.equal(geometry.width,width);
-        assert.equal(geometry.height,600);
+        assert.equal(geometry.height,height);
         assert.equal(geometry.pageScroll,false,JSON.stringify(geometry));
         assert.equal(geometry.horizontalScroll,false,JSON.stringify(geometry));
         assert.deepEqual(geometry.sourceNames,['FreeSteamKeys','Givee Club','Games for Farm','Zeros']);
         assert.ok(geometry.controls.every(rect=>rect.top>=0&&rect.bottom<=geometry.height&&rect.left>=0&&rect.right<=geometry.width),JSON.stringify(geometry));
+        assert.ok(geometry.controls[0].bottom<=geometry.controls[1].top,JSON.stringify(geometry));
+        assert.ok(geometry.controls[4].right<=geometry.controls[5].left,JSON.stringify(geometry));
+        assert.ok(geometry.controls[5].width<=40,JSON.stringify(geometry));
+        const dismiss=layoutApp.browser.$('.update-banner-dismiss');
+        assert.equal(await dismiss.getAttribute('aria-label'),language==='ru'?'Скрыть уведомление':'Dismiss update notification');
+        assert.equal(await dismiss.getAttribute('title'),language==='ru'?'Скрыть уведомление':'Dismiss update notification');
         assert.ok(geometry.lastSource.top>=geometry.sourceBounds.top&&geometry.lastSource.bottom<=geometry.sourceBounds.bottom+1,JSON.stringify(geometry));
         assert.ok(geometry.lastHistory.bottom<=geometry.historyBounds.bottom+1,JSON.stringify(geometry));
         assert.ok(geometry.historyHeight>=80,JSON.stringify(geometry));
         assert.equal(await layoutApp.browser.$('.source-actions .primary-button').isEnabled(),true);
         assert.equal(await layoutApp.browser.$('.sources-card .test-notification-button').isExisting(),false);
+        await layoutApp.browser.$('.header-button').click();await selectSettingsSection(layoutApp.browser,'updatesData');
+        await layoutApp.browser.saveScreenshot(path.join(layoutReport,language+'-'+width+'x'+height+'-updates-settings.png'));
+        await layoutApp.browser.$('.dialog-actions .secondary-button').click();
+        await layoutApp.browser.$('[role="dialog"]').waitForExist({reverse:true});
       }
     }
+    await layoutApp.browser.$('.header-button').click();await selectSettingsSection(layoutApp.browser,'updatesData');
+    const automaticChecks=layoutApp.browser.$('#automatic-update-checks');
+    assert.equal(await automaticChecks.isSelected(),true);
+    await automaticChecks.click();
+    assert.equal((await state()).settings.automaticUpdateChecks,true,'native settings draft is not saved immediately');
+    await layoutApp.browser.$('.dialog-actions .primary-button').click();
+    await layoutApp.browser.$('[role="dialog"]').waitForExist({reverse:true});
+    assert.equal((await state()).settings.automaticUpdateChecks,false);
+    await layoutApp.browser.$('.update-banner-dismiss').click();
+    await layoutApp.browser.$('.update-banner').waitForExist({reverse:true});
+    assert.equal((await invoke('get_update_state')).bannerDismissed,true);
+    await layoutApp.browser.$('.header-button').click();await selectSettingsSection(layoutApp.browser,'updatesData');
+    assert.equal(await layoutApp.browser.$('.update-notes').getText(),update.candidate.notes);
+    assert.equal(await layoutApp.browser.$('.update-candidate .primary-button').isEnabled(),true);
+    await layoutApp.browser.saveScreenshot(path.join(layoutReport,'ru-dismissed-updates-settings.png'));
+    await layoutApp.stop();layoutApp=null;
+    layoutApp=await launchApp(layoutRoot);
+    await layoutApp.browser.$('.header-button').waitForEnabled();
+    assert.equal((await state()).settings.automaticUpdateChecks,false,'automatic checks preference survives a native restart');
+    assert.equal((await invoke('get_update_state')).bannerDismissed,true,'version dismissal survives a native restart');
+    assert.equal(await layoutApp.browser.$('.update-banner').isExisting(),false);
+    await layoutApp.browser.$('.header-button').click();await selectSettingsSection(layoutApp.browser,'updatesData');
+    assert.equal(await layoutApp.browser.$('#automatic-update-checks').isSelected(),false);
+    assert.equal(await layoutApp.browser.$('.update-candidate').isDisplayed(),true);
+    await layoutApp.browser.saveScreenshot(path.join(layoutReport,'ru-restarted-updates-settings.png'));
     assert.equal((await readEvents(layoutRoot)).some(event=>event.kind==='openUrl'),false,'layout test opens no external URLs');
   } catch(error) {
     if(layoutApp) await layoutApp.browser.saveScreenshot(path.join(layoutReport,'failure.png')).catch(()=>{});
@@ -904,7 +939,7 @@ test('native WebView2 layout keeps source and history controls reachable at orig
     try {if(layoutApp) await layoutApp.stop();}
     finally {await preserveProfile(layoutRoot,layoutReport);}
   }
-},{timeout:90_000});
+},{timeout:120_000});
 
 test('polished native layout and one localized Games for Farm error work in both languages',async()=>{
   const polishRoot=await createProfile(),polishReport=path.join(report,'ui-polish');

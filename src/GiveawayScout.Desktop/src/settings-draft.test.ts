@@ -7,6 +7,7 @@ const baseline: AppSettings = {
   giveeClubEnabled: true, gamesForFarmEnabled: true, zerosEnabled: false, freeSteamKeysEnabled: true,
   steamNotificationsEnabled: true, epicGamesNotificationsEnabled: true, gogNotificationsEnabled: true,
   notificationSoundEnabled: true, startAtLogin: false, autostartTarget: "gui", startInTray: true, keepRunningInTray: false,
+  automaticUpdateChecks: true,
   languageCode: "en", verboseLogging: false, initialSyncMode: "silent",
   logMaxFileSizeMb: 2, logFileCount: 1, logDirectory: null,
 };
@@ -41,7 +42,7 @@ it("defaults all four interval fields to one hour and preserves distinct saved i
 it.each([
   "giveeClubEnabled", "gamesForFarmEnabled", "zerosEnabled", "freeSteamKeysEnabled", "steamNotificationsEnabled",
   "epicGamesNotificationsEnabled", "gogNotificationsEnabled", "notificationSoundEnabled", "startAtLogin",
-  "keepRunningInTray", "startInTray", "verboseLogging",
+  "keepRunningInTray", "startInTray", "verboseLogging", "automaticUpdateChecks",
 ] as const)("detects and reverses changes to %s", key => {
   const draft = {...baseline, [key]: !baseline[key]};
   expect(settingsHaveChanges(baseline, draft, numbers)).toBe(true);

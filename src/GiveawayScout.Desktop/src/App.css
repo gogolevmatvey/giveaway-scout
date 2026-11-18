@@ -1299,9 +1299,22 @@ h2 {
   justify-content: center;
   gap: 7px;
   width: auto;
-  min-width: 110px;
-  padding: 10px 18px;
 }
+
+.update-banner > .update-banner-action { min-width: 110px; padding: 10px 18px; }
+.update-banner > .update-banner-dismiss {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  padding: 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #cbd6fa;
+  cursor: pointer;
+}
+.update-banner-dismiss:hover:not(:disabled) { background: rgb(171 188 255 / 14%); color: #fff; }
+.update-banner-dismiss:disabled { cursor: not-allowed; opacity: .55; }
 
 .update-banner ~ .content-grid {
   min-height: 0;
@@ -1625,9 +1638,10 @@ body:has(.settings-backdrop) { overflow: hidden; }
     flex-wrap: wrap;
   }
 
-  .update-banner > button {
+  .update-banner > .update-banner-action {
     justify-content: center;
     width: 100%;
+    order: 1;
   }
 }
 

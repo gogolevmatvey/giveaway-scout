@@ -284,6 +284,7 @@ fn update_settings(
         return Err(error);
     }
 
+    updates::apply_automatic_checks(&app, settings.automatic_update_checks);
     monitor.runtime.reconfigure()?;
     apply_log_level(settings.verbose_logging);
     log::info!(
@@ -1230,6 +1231,7 @@ pub fn run() {
             ui_tests::get_ui_test_identity,
             updates::get_update_state,
             updates::check_for_updates,
+            updates::dismiss_update,
             updates::install_update
         ])
         .build(context)
@@ -1243,6 +1245,12 @@ pub fn run() {
         log::warn!("macOS notifications unavailable: {error}");
     }
     application.run(|app, event| {
+        if matches!(
+            event,
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+        ) {
+            updates::shutdown(app);
+        }
         if let tauri::RunEvent::ExitRequested { api, code, .. } = event
             && let Some(monitor) = app.try_state::<MonitorState>()
             && !monitor.runtime.is_stopped()

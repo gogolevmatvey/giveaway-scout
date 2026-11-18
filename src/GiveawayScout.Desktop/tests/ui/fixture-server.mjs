@@ -9,7 +9,7 @@ const bridge = `
 const settings = {checkIntervalMinutes:60,sourceCheckIntervals:{freeSteamKeys:60,giveeClub:60,gamesForFarm:60,zeros:60},httpTimeoutSeconds:30,httpRetryCount:2,
 giveeClubEnabled:true,gamesForFarmEnabled:true,zerosEnabled:false,freeSteamKeysEnabled:true,steamNotificationsEnabled:true,
 epicGamesNotificationsEnabled:true, gogNotificationsEnabled: true,notificationSoundEnabled:true,startAtLogin:false,autostartTarget:'gui',
-startInTray:false,keepRunningInTray:false,languageCode:'en',verboseLogging:false,initialSyncMode:'silent',logMaxFileSizeMb:2,logFileCount:1,logDirectory:null};
+startInTray:false,keepRunningInTray:false,automaticUpdateChecks:true,languageCode:'en',verboseLogging:false,initialSyncMode:'silent',logMaxFileSizeMb:2,logFileCount:1,logDirectory:null};
 const logging = {requestedAtStartup:{maxFileSizeMb:2,fileCount:1,directory:null},effectiveDirectory:'C:/Fixture logs',activeFilePath:'C:/Fixture logs/Giveaway Scout.log',maxFileSizeMb:2,fileCount:1,restartRequired:false,lastError:null,usingFallback:false};
 const monitor={isChecking:false,lastStartedAtUtc:null,lastCompletedAtUtc:null,lastSuccessfulCheckUtc:null,lastError:null,lastNewItems:0,lastFailureCount:0,sourceFailures:[],sourceStates:['freeSteamKeys','giveeClub','gamesForFarm','zeros'].map(source=>({source,phase:source==='zeros'?'disabled':'waiting',lastStartedAtUtc:null,lastCompletedAtUtc:null,lastSuccessfulCheckUtc:null,nextCheckAtUtc:null,lastError:null,lastNewItems:0,unresolvedLinks:0}))};
 const params = new URLSearchParams(location.search);
@@ -21,8 +21,10 @@ if (new URLSearchParams(location.search).has('freeSteamKeys')) history.push({id:
 if (new URLSearchParams(location.search).has('merged')) history.push(
  {id:'merged-1',campaignId:'campaign-1',source:'freeSteamKeys',originSource:'giveeClub',originName:'Givee Club',detectedSources:['freeSteamKeys','giveeClub'],store:'steam',kind:'giveaway',title:'Приключение ONE',url:'https://givee.club/ru/event/123',receivedAtUtc:'2026-11-07T08:00:00Z',readAtUtc:null},
  {id:'merged-2',source:'gamesForFarm',originSource:'gamesForFarm',detectedSources:['gamesForFarm'],store:'unknown',kind:'raffle',title:'Different ONE',url:'https://gamesforfarm.com/giveaway/456',receivedAtUtc:'2026-11-07T07:00:00Z',readAtUtc:'2026-11-07T08:00:00Z'});
-const update={mode:'development',phase:'idle',currentVersion:'0.1.0',candidate:null,downloadedBytes:0,totalBytes:null,lastCheckedAtUtc:null,lastError:null};
+const update={mode:'development',phase:'idle',currentVersion:'0.1.0',candidate:null,bannerDismissed:false,downloadedBytes:0,totalBytes:null,lastCheckedAtUtc:null,lastError:null};
 if(new URLSearchParams(location.search).has('update')) Object.assign(update,{mode:'enabled',phase:'available',candidate:{token:'fixture-update',version:'2.0.0',notes:'Fixture update'}});
+const dismissedUpdateVersions=new Set(params.has('dismissedUpdate')?['2.0.0']:[]);
+const updateSnapshot=()=>({...structuredClone(update),bannerDismissed:Boolean(update.candidate&&dismissedUpdateVersions.has(update.candidate.version))});
 const callbacks=new Map(),listeners=new Map();let callbackId=0;
 const emit=event=>{for(const listener of listeners.values())if(listener.event===event)callbacks.get(listener.handler)?.({event,id:1,payload:null});};
 // The cursor stores its own immutable sort tuple, so deleting or prepending rows
@@ -31,12 +33,23 @@ const historyOrder = new Map(history.map((item,index)=>[item.id,history.length-i
 let historySequence = history.length;
 const historyKey = item => {if(!historyOrder.has(item.id))historyOrder.set(item.id,++historySequence);return [item.receivedAtUtc,historyOrder.get(item.id),item.id];};
 const compareHistoryKeys = (left,right) => right[0].localeCompare(left[0]) || right[1]-left[1] || right[2].localeCompare(left[2]);
-window.__uiTest = {calls:[],unexpected:[],monitor,logging,history,settings,update,emit,historyPageRequests:[],historyPageResponses:[],failHistoryPages:params.has('historyError')?100:0,historyFailureCursor:null,pauseHistoryPages:params.has('pauseHistory')?1:0,failSettingsWrites:0,failTestNotifications:0,pauseTestNotification:false,folderChoice:null};
+window.__uiTest = {calls:[],unexpected:[],monitor,logging,history,settings,update,emit,historyPageRequests:[],historyPageResponses:[],failHistoryPages:params.has('historyError')?100:0,historyFailureCursor:null,pauseHistoryPages:params.has('pauseHistory')?1:0,failSettingsWrites:0,failTestNotifications:0,pauseTestNotification:false,failDismissUpdate:0,pauseDismissUpdate:false,nextUpdateCandidate:null,folderChoice:null};
 window.__TAURI_INTERNALS__ = {transformCallback:callback=>{callbacks.set(++callbackId,callback);return callbackId;},unregisterCallback:id=>callbacks.delete(id),invoke:async(command,args)=>{
   window.__uiTest.calls.push({command,args});
   switch(command) {
     case 'get_app_state': return {appName:'Giveaway Scout',version:'1.0.0',platform:'windows',architecture:'x86_64',isDevelopment:new URLSearchParams(location.search).has('dev')};
-    case 'get_update_state': return structuredClone(update);
+    case 'get_update_state': return updateSnapshot();
+    case 'check_for_updates':
+      if(window.__uiTest.nextUpdateCandidate) Object.assign(update,{phase:'available',candidate:window.__uiTest.nextUpdateCandidate});
+      update.lastCheckedAtUtc='2026-11-17T09:00:00Z';return updateSnapshot();
+    case 'dismiss_update':
+      if(args.token!==update.candidate?.token||['downloading','installing'].includes(update.phase)) throw new Error('Fixture candidate cannot be dismissed');
+      if(window.__uiTest.pauseDismissUpdate) await new Promise(resolve=>{window.__uiTest.finishDismissUpdate=resolve;});
+      if(window.__uiTest.failDismissUpdate>0) {window.__uiTest.failDismissUpdate--;throw new Error('Fixture dismissal write failed');}
+      dismissedUpdateVersions.add(update.candidate.version);return updateSnapshot();
+    case 'install_update':
+      if(args.token!==update.candidate?.token||args.confirmed!==true) throw new Error('Fixture install confirmation required');
+      update.phase='downloading';return;
     case 'get_notification_history': return history;
     case 'get_notification_history_page': {
       const cursor=args?.cursor??null;
